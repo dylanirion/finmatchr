@@ -99,8 +99,22 @@ update_edge <- function( from_uuid, to_uuid, label, basis, reviewed ) {
   
   #triadic closures (what is it called with > 3 nodes)?
   query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..4]->(img2:Image) ",
-                   "WHERE id(img1) <> id(img2) AND NOT (img1)-[:IS_SAME]-(img2) AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] AND NOT img2.unusable = true AND NOT img1.unusable = true",
-                   "MERGE (img1)-[:IS_SAME {basis: 'propagated'}]-(img2)" )
+                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME]->(img2) ",
+                   "AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
+                   "MERGE (img1)<-[:IS_SAME {basis: 'propagated'}]->(img2)" )
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  
+  #do the same but for all reviewed
+  query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..4 {reviewed: true}]->(img2:Image) ",
+                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[r:IS_SAME {reviewed: true}]->(img2) ",
+                   "AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
+                   "MERGE (img1)<-[r:IS_SAME]->(img2) ",
+                   "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
+                   "ON MATCH SET r.reviewed = true")
+  cat( "QUERY: ", query, "\n" )
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
 }
@@ -136,6 +150,7 @@ query_n_unreviewed_action <- observeEvent( input$query_n_unreviewed, {
 #"query_by_folder_path" button click
 # sets "query" payload from select input
 # triggers "run" with increment
+#@todo: how to improve speed of algo.cover?
 query_by_folder_path_action <- observeEvent( input$run_folder_query, {
   react$draw <- NULL
   payload$graph = NULL
