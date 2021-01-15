@@ -80,7 +80,7 @@ update_node <- function( uuid, region, date, unusable, reviewed ) {
   query %>% call_neo4j( con )
   
   #if unusable = T, detach any propagated IS_SAME relationships
-  if( ifelse( unusable = 'null', F, unusable ) ) {
+  if( ifelse( unusable == 'null', F, unusable ) ) {
       query <- paste0( "MATCH (n {uuid: '", uuid, "', unusable: true}) ",
                        "OPTIONAL MATCH (n)<-[r:IS_SAME {basis: 'propagated'}]->(:Image) ",
                        "DELETE r" )
