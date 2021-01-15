@@ -78,6 +78,15 @@ update_node <- function( uuid, region, date, unusable, reviewed ) {
   query <- paste0( "MATCH (n {uuid: '", uuid, "'}) SET n.region = '", region, "', n.date = date('", date, "'), n.unusable = ", unusable, ", n.reviewed = ", reviewed )
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
+  
+  #if unusable = T, detach any propagated IS_SAME relationships
+  if(unusable) {
+      query <- paste0( "MATCH (n {uuid: '", uuid, "', unusable: true}) ",
+                       "OPTIONAL MATCH (n)<-[r:IS_SAME {basis: 'propagated'}]->(:Image) ",
+                       "DELETE r" )
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  }
 }
 update_edge <- function( from_uuid, to_uuid, label, basis, reviewed ) {
   query <- paste0( "MATCH (from {uuid: '", from_uuid, "'}),(to {uuid:'", to_uuid, "'}) ",
