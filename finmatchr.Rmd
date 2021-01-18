@@ -97,8 +97,8 @@ update_edge <- function( from_uuid, to_uuid, label, basis, reviewed ) {
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  #triadic closures (what is it called with > 3 nodes)?
-  query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..2]->(img2:Image) ",
+  #transitive (triadic) closures
+  query <- paste0( "MATCH (img1:Image)-[:IS_SAME*2..4]->(img2:Image) ",
                    "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME]->(img2) ",
                    "AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] ",
                    "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
@@ -107,14 +107,13 @@ update_edge <- function( from_uuid, to_uuid, label, basis, reviewed ) {
   query %>% call_neo4j( con )
   
   #do the same but for all reviewed
-  query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..2 {reviewed: true}]->(img2:Image) ",
-                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[r:IS_SAME {reviewed: true}]->(img2) ",
+  query <- paste0( "MATCH (img1:Image)-[:IS_SAME*2..4 {reviewed: true}]->(img2:Image) ",
+                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME {reviewed: true}]->(img2) ",
                    "AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] ",
                    "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
                    "MERGE (img1)<-[r:IS_SAME]->(img2) ",
                    "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
                    "ON MATCH SET r.reviewed = true")
-  cat( "QUERY: ", query, "\n" )
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
 }
@@ -150,7 +149,6 @@ query_n_unreviewed_action <- observeEvent( input$query_n_unreviewed, {
 #"query_by_folder_path" button click
 # sets "query" payload from select input
 # triggers "run" with increment
-#@todo: how to improve speed of algo.cover?
 query_by_folder_path_action <- observeEvent( input$run_folder_query, {
   react$draw <- NULL
   payload$graph = NULL
@@ -464,12 +462,11 @@ keydown <- observeEvent( input$keydown, {
 
 #"refresh" (input) reactives
 # updates "Database Statistics" section
-# @todo: combine img queries into one?
 # populates and triggers folder_list
 db_stats <- observeEvent( input$refresh, {
   withProgress( message = "Calculating Statistics...", value = 0, {
     img_count_query <- paste0( "MATCH (img:Image) ",
-                               "WHERE ( img.unusable <> true OR img.unusable IS NULL ) ",
+                               "WHERE COALESCE(img.unusable, false) <> true ",
                                "WITH COUNT(img) AS c ",
                                "RETURN c" )
     cat( "QUERY: ", img_count_query, "\n" )
@@ -477,7 +474,7 @@ db_stats <- observeEvent( input$refresh, {
     setProgress( value = 1/3 )
     
     unreviewed_img_count_query <- paste0( "MATCH (img:Image) ",
-                                          "WHERE ( img.unusable <> true OR img.unusable IS NULL ) AND (img.reviewed <> true OR img.reviewed IS NULL) ",
+                                          "WHERE COALESCE(img.unusable, false) <> true AND COALESCE(img.reviewed, false) <> true ",
                                           "WITH COUNT(img) AS c ",
                                           "RETURN c" )
     cat( "QUERY: ", unreviewed_img_count_query, "\n" )
@@ -486,14 +483,14 @@ db_stats <- observeEvent( input$refresh, {
     setProgress( value = 2/3 )
     
     unreviewed_folder_count_query <- paste0( "MATCH (i:Image)<-[:HAS_IMAGE]-(f:Folder)<-[:HAS_FOLDER*]-(p:Folder) ",
-                                             "WHERE ( i.reviewed <> true OR i.reviewed IS NULL ) AND ( i.unusable <> true OR i.unusable IS NULL ) ",
+                                             "WHERE COALESCE(i.unusable, false) <> true ",
                                              ## COMMENT BELOW TO SEARCH ALL FOLDERS, NOT JUST MOSSEL BAY
                                              "AND p.name = 'MB' ",
                                              ##
-                                             "OPTIONAL MATCH (i)<-[r]->(i) ",
-                                             "WITH f, COUNT(r) AS rels, COUNT(i) AS imgs ",
-                                             "WHERE rels <> ( imgs * ( imgs - 1 ) ) / 2 ",
-                                             "RETURN f.path" )
+                                             "WITH f, COUNT(i) AS usable, COLLECT(id(i)) AS ids ",
+                                             "WHERE SIZE([ (i)<-[:HAS_IMAGE]-(f) WHERE COALESCE(i.reviewed, false) = true | i ] ) <> usable ",
+                                             "OR SIZE( [ (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids AND COALESCE(r.reviewed, false) = true | r ] ) <> ( usable * ( usable - 1 ) ) / 2 ",
+                                             "RETURN f.path")
     cat( "QUERY: ", unreviewed_folder_count_query, "\n" )
     unreviewed_folders <-  unreviewed_folder_count_query %>% call_neo4j( con, type = "row" )
     react$unreviewed_folder_count <- unreviewed_folders$f.path %>% nrow()
