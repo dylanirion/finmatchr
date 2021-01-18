@@ -157,21 +157,15 @@ query_by_folder_path_action <- observeEvent( input$run_folder_query, {
   payload$query <- paste0( "MATCH (img1:Image)<-[:HAS_IMAGE]-(:Folder {path: '", input$query_by_folder_path, "'}) ",
                          "WITH img1 ",
                          "OPTIONAL MATCH (img1)<-[rel:IS_SAME]->(img2:Image) WHERE rel.basis IN ['duplicate', 'cropped'] ",
-                         "WITH COLLECT(img1) + COLLECT(img2) AS imgs, COLLECT(rel) AS r ",
+                         "WITH COLLECT(id(img1)) + COLLECT(id(img2)) AS ids, COLLECT(img1) + COLLECT(img2) AS imgs, COLLECT(rel) AS r ",
                          "UNWIND imgs AS img ",
-                         "WITH img, r ",
+                         "WITH img, ids, r ",
                          "OPTIONAL MATCH (img)<-[rel1:HAS_IMAGE]-(enc:Encounter) ",
-                         "WITH enc, COLLECT(img) + COLLECT(enc) AS n, r + COLLECT(rel1) AS r ",
+                         "WITH ids, enc, COLLECT(img) + COLLECT(enc) AS n, r + COLLECT(rel1) AS r ",
                          "OPTIONAL MATCH (enc)<-[rel:HAS_ENCOUNTER]-(evt:Event) ",
-                         "WITH n + COLLECT(evt) AS nodes, r + COLLECT(rel) AS relationships ",
-                         "RETURN nodes, relationships ",
-                         "UNION ",
-                         "MATCH (img1:Image)<-[:HAS_IMAGE]-(:Folder {path: '", input$query_by_folder_path, "'}) ",
-                         "WITH img1 ",
-                         "OPTIONAL MATCH (img1)<-[rel:IS_SAME]->(img2:Image) WHERE rel.basis IN ['duplicate', 'cropped'] ",
-                         "WITH COLLECT(img1) + COLLECT(img2) AS imgs ",
-                         "CALL apoc.algo.cover(imgs) YIELD rel AS relationships ",
-                         "RETURN imgs AS nodes, relationships" )
+                         "WITH ids, n + COLLECT(evt) AS nodes, r + COLLECT(rel) AS relationships ",
+                         "MATCH (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids ",
+                         "RETURN nodes, COLLECT(r) + relationships AS realtionships" )
   react$run <- ifelse( is.null( react$run ), 0, react$run + 1 )
 })
 
