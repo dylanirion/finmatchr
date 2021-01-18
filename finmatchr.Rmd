@@ -162,7 +162,7 @@ query_by_folder_path_action <- observeEvent( input$run_folder_query, {
                          "WITH ids, enc, COLLECT(img) + COLLECT(enc) AS n, r + COLLECT(rel1) AS r ",
                          "OPTIONAL MATCH (enc)<-[rel:HAS_ENCOUNTER]-(evt:Event) ",
                          "WITH ids, n + COLLECT(evt) AS nodes, r + COLLECT(rel) AS relationships ",
-                         "MATCH (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids ",
+                         "OPTIONAL MATCH (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids ",
                          "RETURN nodes, COLLECT(r) + relationships AS realtionships" )
   react$run <- ifelse( is.null( react$run ), 0, react$run + 1 )
 })
@@ -218,25 +218,27 @@ run_query <- observeEvent( react$run, {
           add_column( !!!edge_cols[!names( edge_cols ) %in% names(.)] )
       }
       
-      #create virtual relationships for any that aren't present
-      virtual_rels <- t( combn( graph$nodes %>% filter( label == "Image" ) %>% .$id, 2 ) ) %>%
+      if( graph$nodes %>% filter( label == "Image" ) %>% nrow() > 1 ) {
+        #create virtual relationships for any that aren't present
+        virtual_rels <- t( combn( graph$nodes %>% filter( label == "Image" ) %>% .$id, 2 ) ) %>%
         `colnames<-`( c( "from", "to" ) ) %>% as_tibble() %>%
-        mutate( label = "VIRTUAL", basis = NA_character_, reviewed = F )
-      
-      #if no real relationships, just add them all
-      if( is.null( graph$relationships ) ) {
-        graph$relationships <- virtual_rels
-      } else { #otherwise we need to join only those that don't exist
-        graph$relationships <- bind_rows( graph$relationships,
-                                          anti_join( virtual_rels, bind_rows( graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ),
-                                                                              graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ) %>%
-                                                                                rename( "from" = "to", "to" = "from" ) ),
-                                                     by = c( "from", "to" ) ) )
+          mutate( label = "VIRTUAL", basis = NA_character_, reviewed = F )
+        
+        #if no real relationships, just add them all
+        if( is.null( graph$relationships ) ) {
+          graph$relationships <- virtual_rels
+          } else { #otherwise we need to join only those that don't exist
+            graph$relationships <- bind_rows( graph$relationships,
+                                              anti_join( virtual_rels, bind_rows( graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ),
+                                                                                  graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ) %>%
+                                                                                    rename( "from" = "to", "to" = "from" ) ),
+                                                         by = c( "from", "to" ) ) )
+            }
+        # overwrite ID as from*to, this works so long as there is only 1 relationship between each image node,
+        # and hopefully ensures bidirectional IDs, so long as there aren't two with the same product in a subgraph
+        graph$relationships <- graph$relationships %>%
+          mutate( id = as.numeric(from) * as.numeric(to) )
       }
-      # overwrite ID as from*to, this works so long as there is only 1 relationship between each image node,
-      # and hopefully ensures bidirectional IDs, so long as there aren't two with the same product in a subgraph
-      graph$relationships <- graph$relationships %>%
-        mutate( id = as.numeric(from) * as.numeric(to) )
       
       #re-add unusable nodes
       graph$nodes <- bind_rows( graph$nodes, unusable )
