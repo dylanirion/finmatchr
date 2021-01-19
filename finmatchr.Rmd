@@ -23,14 +23,6 @@ Review Match Pairs
 =======================================================================
 
 ```{r setup, echo = FALSE, cache = F}
-library(flexdashboard)
-library(shiny)
-library(tidyverse)
-library(svgPanZoom)
-library(visNetwork)
-library(neo4r)
-library(aws.s3)
-library(tools)
 
 if( Sys.which("convert") == "" ) { stop( "`convert` not found, please make sure ImageMagick is installed." ) }
 
@@ -194,6 +186,7 @@ run_query <- observeEvent( react$run, {
     cat( "QUERY: ", payload$query, "\n" )
     graph <- payload$query %>% call_neo4j( con, type = "graph" )
   
+    #@todo: move all this into a function
     if( length(graph) ) { #@todo: renderText() somehow if there are no results?
       # add potentially empty property columns
       node_cols <- tibble( unusable = NA, reviewed = NA, date = NA_character_, camera_date = NA_character_ )
@@ -205,10 +198,6 @@ run_query <- observeEvent( react$run, {
         distinct() %>%
         mutate( label = graph$nodes$label %>% unlist() %>% .[ . != "DUMMY" ] ) %>%
         add_column( !!!node_cols[!names( node_cols ) %in% names(.)] )
-      
-      #remove 'unusable' nodes, but re-add later
-      unusable <- graph$nodes %>% filter( unusable == T )
-      graph$nodes <- graph$nodes %>% filter( unusable != T | is.na(unusable) )
     
       # unnest relationships
       if( !is.null( graph$relationships ) ) {
@@ -217,6 +206,28 @@ run_query <- observeEvent( react$run, {
           rename( from = startNode, to = endNode, label = type ) %>%
           add_column( !!!edge_cols[!names( edge_cols ) %in% names(.)] )
       }
+      #pseudonodes from relationships (nested tibble)
+      igraph_object<- graph_from_data_frame( d = graph$relationships %>% filter( label == "IS_SAME" & basis %in% c( "duplicate", "cropped" ) & reviewed == T ) %>% select( from, to, everything() ), directed = F, vertices = graph$nodes )
+      
+      comp <- groups( components( igraph_object ) ) %>% map_df( ~ tibble( id = as.character(md5(paste0( sort( . ), collapse = ", ") ) ), members = list(.) ) )
+      graph$nodes <- graph$nodes %>%
+        mutate( group = comp[components( igraph_object )$membership, "id"] %>% .$id ) %>%
+        nest( data = !group ) %>%
+        select( id = group, data ) %>%
+        mutate( label = map_chr( data, ~unique( .$label ) ) )
+      
+      #drop the relationships we grouped
+      graph$relationships <- graph$relationships %>%
+        rowwise() %>%
+        mutate( keep = map2_lgl( from, to, ~ !any( sapply( comp$members, function(e) is.element( .x, e ) & is.element( .y, e ) ) ) ),
+                from = comp[which( sapply( comp$members, function(e) is.element( from, e ) ) ), "id"] %>% .$id,
+                to = comp[which( sapply( comp$members, function(e) is.element( to, e ) ) ), "id"] %>% .$id ) %>%
+        ungroup() %>%
+        filter( keep ) %>% select( -keep )
+      
+      #remove 'unusable' nodes (but re-add later)
+      unusable <- graph$nodes %>% mutate( unusable = map_lgl( data, ~all( .$unusable == T ) ) ) %>% filter( unusable == T ) %>% select( -unusable ) 
+      graph$nodes <- graph$nodes %>% mutate( unusable = map_lgl( data, ~all( .$unusable == T ) ) ) %>% filter( unusable != T | is.na(unusable) ) %>% select( -unusable )
       
       if( graph$nodes %>% filter( label == "Image" ) %>% nrow() > 1 ) {
         #create virtual relationships for any that aren't present
@@ -234,10 +245,7 @@ run_query <- observeEvent( react$run, {
                                                                                     rename( "from" = "to", "to" = "from" ) ),
                                                          by = c( "from", "to" ) ) )
             }
-        # overwrite ID as from*to, this works so long as there is only 1 relationship between each image node,
-        # and hopefully ensures bidirectional IDs, so long as there aren't two with the same product in a subgraph
-        graph$relationships <- graph$relationships %>%
-          mutate( id = as.numeric(from) * as.numeric(to) )
+        #@TODO: OVERWRITE EDGE IDS, CONSIDERING >1 EDGE BETWEEN NODES
       }
       
       #re-add unusable nodes
@@ -292,7 +300,7 @@ style_results <- observeEvent( react$style, {
 draw_results <- eventReactive( react$draw, {
   graph <- payload$graph
   payload$original_edges <- graph$relationships
-  react$copy <- ifelse( is.null( react$copy ), 0, react$copy + 1 )
+  #react$copy <- ifelse( is.null( react$copy ), 0, react$copy + 1 )
   visNetwork( graph$nodes, graph$relationships, height = '100%',
               submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) ) %>%
   visEvents( type = "on", click = "function(properties) {
