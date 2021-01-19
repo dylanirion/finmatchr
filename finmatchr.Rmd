@@ -39,8 +39,10 @@ chosen.map <- c( IS_SAME = T, UNSURE = T, NOT_SAME = T, HAS_ENCOUNTER = F, HAS_I
 smooth.map <- c( IS_SAME = F, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = F, HAS_IMAGE = F, VIRTUAL = F )
 dashes.map <- c( IS_SAME = F, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = T, HAS_IMAGE = T, VIRTUAL = F )
 
-#script to forward keydown to shiny input, and create custom handler for simulating on click graph event
+#script to forward keydown to shiny input
+#custom handler for simulating on click graph event
 # (visSetSelection doesn't seem to trigger the on click defined in the visNetwork)
+#custom handlers for updating to and from img indexes
 tags$script( paste0( "$(document).on('keydown', function (e) {Shiny.setInputValue('keydown', e.which, {priority: 'event'});});",
                      "Shiny.addCustomMessageHandler('simSelect', function(edge) { ",
                      "  Shiny.setInputValue('edge_from_id', edge.from, {priority: 'event'});",
@@ -79,7 +81,7 @@ s3_to_tmp <- function( path, uuid ) {
 
 #setup reactive values
 react <- reactiveValues( run = NULL, style = NULL, draw = NULL, update = NULL, copy = NULL, valid_img_count = NULL, unreviewed_img_count = NULL, unreviewed_folder_count = NULL, unreviewed_n_folders = NULL )
-payload <- reactiveValues( query = NULL, graph = NULL, original_edges = NULL, from_meta = NULL, to_meta = NULL, edge_meta = NULL )
+payload <- reactiveValues( query = NULL, graph = NULL, original_edges = NULL, from = NULL, to = NULL, from_meta = NULL, to_meta = NULL, edge_meta = NULL )
 
 #database update functions
 update_node <- function( uuid, region, date, unusable, reviewed ) {
@@ -373,16 +375,16 @@ start_copy <- observeEvent( react$copy, {
 # sets from/to/edge _meta payloads
 watch_graph_click <- observeEvent( input$edge_id, {
   if( !input$edge_label %in% c( 'HAS_ENCOUNTER', 'HAS_IMAGE' ) ) {
-    payload$from_meta <- payload$graph$nodes %>% filter( id == input$edge_from_id ) %>% select( -id, -label ) %>% unnest( cols = c(data) )
-    payload$to_meta <- payload$graph$nodes %>% filter( id == input$edge_to_id )  %>% select( -id, -label ) %>% unnest( cols = c(data) )
+    payload$from <- payload$graph$nodes %>% filter( id == input$edge_from_id ) %>% select( -id, -label ) %>% unnest( cols = c(data) )
+    payload$to <- payload$graph$nodes %>% filter( id == input$edge_to_id )  %>% select( -id, -label ) %>% unnest( cols = c(data) )
     payload$edge_meta <- payload$graph$relationships %>% filter( id == input$edge_id )
     cat( "Edge Select: ", input$edge_id, "\n" )
   }
 })
 
-#"from_meta" reactive
+#"from" reactive
 # sets from viewer img index
-from <- observeEvent( payload$from_meta, {
+from <- observeEvent( payload$from, {
   session$sendCustomMessage( "setFromImgIDX", 1 )
 })
 
@@ -391,8 +393,9 @@ from <- observeEvent( payload$from_meta, {
 # updates input field values from meta
 # return svgPanZoom 
 draw_from <- eventReactive( input$from_img_idx, {
-  img <- payload$from_meta %>% slice( input$from_img_idx )
-  output$from_id <- renderText({ paste0( img %>% .$uuid, " [", input$from_img_idx, "/", nrow(payload$from_meta), "]" ) })
+  payload$from_meta <- payload$from %>% slice( input$from_img_idx )
+  img <- payload$from_meta
+  output$from_id <- renderText({ paste0( img %>% .$uuid, " [", input$from_img_idx, "/", nrow(payload$from), "]" ) })
   output$from_path <- renderText({ img %>% .$source_file })
   output$from_exif_date <- renderText({ img %>% .$camera_date })
   updateDateInput( session, "from_date", label = NULL, value = img %>% .$date )
@@ -402,9 +405,9 @@ draw_from <- eventReactive( input$from_img_idx, {
   return( draw_img( img %>% .$uuid ) )
 })
 
-#"to_meta" reactive
+#"to" reactive
 # sets to viewer img index
-from <- observeEvent( payload$to_meta, {
+from <- observeEvent( payload$to, {
   session$sendCustomMessage( "setToImgIDX", 1 )
 })
 
@@ -413,8 +416,9 @@ from <- observeEvent( payload$to_meta, {
 # updates input field values from meta
 # return svgPanZoom 
 draw_to <- eventReactive( input$to_img_idx, {
-  img <- payload$to_meta %>% slice( input$to_img_idx )
-  output$to_id <- renderText({ paste0( img %>% .$uuid, " [", input$to_img_idx, "/", nrow(payload$to_meta), "]" ) })
+  payload$to_meta <- payload$to %>% slice( input$to_img_idx )
+  img <- payload$to_meta
+  output$to_id <- renderText({ paste0( img %>% .$uuid, " [", input$to_img_idx, "/", nrow(payload$to), "]" ) })
   output$to_path <- renderText({ img %>% .$source_file })
   output$to_exif_date <- renderText({ img %>% .$camera_date })
   updateDateInput( session, "to_date", label = NULL, value = img %>% .$date )
@@ -500,7 +504,7 @@ keydown <- observeEvent( input$keydown, {
       #can't get on click to fire through visSetSelection, so doing manually
       session$sendCustomMessage( "simSelect", list( from = relationships$from[i], to = relationships$to[i], label = relationships$label[i], id = relationships$id[i] ) )
     } else if( input$keydown == 88 | input$keydown == 67 ) {
-      nodes <- payload$from_meta
+      nodes <- payload$from
       j <- input$from_img_idx
       if( input$keydown == 88 ) {  # x
         j <- ifelse(  j == 1, length( nodes$id ), j - 1 )
@@ -509,7 +513,7 @@ keydown <- observeEvent( input$keydown, {
       }
       session$sendCustomMessage( "setFromImgIDX", j )
     } else if( input$keydown == 188 | input$keydown == 190 ) {
-      nodes <- payload$to_meta
+      nodes <- payload$to
       j <- input$to_img_idx
       if( input$keydown == 188 ) {  # <
         j <- ifelse(  j == 1, length( nodes$id ), j - 1 )
