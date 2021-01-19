@@ -97,7 +97,7 @@ update_edge <- function( from_uuid, to_uuid, label, basis, reviewed ) {
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  #transitive (triadic) closures
+  #transitive (triadic) closures (anything greater than 4 is too slow)
   query <- paste0( "MATCH (img1:Image)-[:IS_SAME*2..4]->(img2:Image) ",
                    "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME]->(img2) ",
                    "AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] ",
