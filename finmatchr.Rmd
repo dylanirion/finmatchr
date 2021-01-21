@@ -579,8 +579,8 @@ db_stats <- observeEvent( input$refresh, {
                                              "AND p.name = 'MB' ",
                                              ##
                                              "WITH f, COUNT(i) AS usable, COLLECT(id(i)) AS ids ",
-                                             #"WHERE SIZE([ (i)<-[:HAS_IMAGE]-(f) WHERE COALESCE(i.reviewed, false) = true | i ] ) <> usable ",
-                                             #"OR SIZE( [ (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids AND COALESCE(r.reviewed, false) = true | r ] ) < ( usable * ( usable - 1 ) ) / 2 ",
+                                             "WHERE SIZE([ (i)<-[:HAS_IMAGE]-(f) WHERE COALESCE(i.reviewed, false) = true | i ] ) <> usable ",
+                                             "OR SIZE( [ (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids AND COALESCE(r.reviewed, false) = true | r ] ) < ( usable * ( usable - 1 ) ) / 2 ",
                                              "RETURN f.path")
     cat( "QUERY: ", unreviewed_folder_count_query, "\n" )
     unreviewed_folders <-  unreviewed_folder_count_query %>% call_neo4j( con, type = "row" )
