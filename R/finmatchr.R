@@ -8,7 +8,7 @@
 #' @import aws.s3
 #' @importFrom magrittr "%>%"
 #' @importFrom purrr map map_df map_chr map_lgl map2_lgl
-#' @importFrom dplyr mutate select rename filter group_by ungroup recode case_when left_join anti_join distinct rowwise bind_rows slice
+#' @importFrom dplyr mutate select rename filter group_by ungroup recode case_when left_join anti_join distinct rowwise bind_rows slice arrange
 #' @importFrom tidyr nest unnest
 #' @importFrom tibble tibble add_column as_tibble
 #' @importFrom tools file_ext
