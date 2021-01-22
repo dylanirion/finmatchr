@@ -23,14 +23,6 @@ Review Match Pairs
 =======================================================================
 
 ```{r setup, echo = FALSE, cache = F}
-library(flexdashboard)
-library(shiny)
-library(tidyverse)
-library(svgPanZoom)
-library(visNetwork)
-library(neo4r)
-library(aws.s3)
-library(tools)
 
 if( Sys.which("convert") == "" ) { stop( "`convert` not found, please make sure ImageMagick is installed." ) }
 
@@ -46,6 +38,64 @@ physics.map <- c( IS_SAME = T, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = F, HAS_
 chosen.map <- c( IS_SAME = T, UNSURE = T, NOT_SAME = T, HAS_ENCOUNTER = F, HAS_IMAGE = F, VIRTUAL = T )
 smooth.map <- c( IS_SAME = F, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = F, HAS_IMAGE = F, VIRTUAL = F )
 dashes.map <- c( IS_SAME = F, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = T, HAS_IMAGE = T, VIRTUAL = F )
+
+#script to forward keydown to shiny input
+#custom handler for simulating on click graph event
+# (visSetSelection doesn't seem to trigger the on click defined in the visNetwork)
+#custom handlers for updating to and from img indexes
+tags$script( HTML(
+  paste0( "var keys = {};",
+          "var keysEnabled = false;",
+          "var graphSelected = false;",
+          "$('input').on('focus', function() { ",
+          "  keysEnabled = false;",
+          "});",
+          "$('input').on('blur', function() { ",
+          "  if( graphSelected ) { keysEnabled = true; }",
+          "});",
+          "$(document).on('keydown', function(e) { ",
+          "  if( !e.repeat && keysEnabled ) { ",
+          "    keys[e.which] = e.type == 'keydown';",
+          "    if( keys[37] && Object.values(keys).filter(Boolean).length == 1 ) { ",
+          "      Shiny.setInputValue('keys', keys, {priority: 'event'});",
+          "      return false;",
+          "    } else if( keys[39] && Object.values(keys).filter(Boolean).length == 1 ) { ",
+          "      Shiny.setInputValue('keys', keys, {priority: 'event'});",
+          "      return false;",
+          "    } else if( keys[88] && Object.values(keys).filter(Boolean).length == 1 ) { ",
+          "      Shiny.setInputValue('keys', keys, {priority: 'event'});",
+          "      return false;",
+          "    } else if( keys[67] && Object.values(keys).filter(Boolean).length == 1 ) { ",
+          "      Shiny.setInputValue('keys', keys, {priority: 'event'});",
+          "      return false;",
+          "    } else if( keys[188] && Object.values(keys).filter(Boolean).length == 1 ) { ",
+          "      Shiny.setInputValue('keys', keys, {priority: 'event'});",
+          "      return false;",
+          "    } else if( keys[190] && Object.values(keys).filter(Boolean).length == 1 ) { ",
+          "      Shiny.setInputValue('keys', keys, {priority: 'event'});",
+          "      return false;",
+          "    }",
+          "  }",
+          "});",
+          "$(document).on('keyup', function(e) { ",
+          "  keys[e.which] = e.type == 'keydown';",
+          "  return false;",
+          "});",
+          "function selectEdge(from, to, label, id) { ",
+          "  Shiny.setInputValue('edge_from_id', from, {priority: 'event'});",
+          "  Shiny.setInputValue('edge_to_id', to, {priority: 'event'});",
+          "  Shiny.setInputValue('edge_label', label, {priority: 'event'});",
+          "  Shiny.setInputValue('edge_id', id, {priority: 'event'});",
+          "};",
+          "Shiny.addCustomMessageHandler('simSelect', function(edge) { ",
+          "  selectEdge(edge.from, edge.to, edge.label, edge.id);",
+          "});",
+          "Shiny.addCustomMessageHandler('setFromImgIDX', function(id) { ",
+          "  Shiny.setInputValue('from_img_idx', id, {priority: 'event'});",
+          "});",
+          "Shiny.addCustomMessageHandler('setToImgIDX', function(id) { ",
+          "  Shiny.setInputValue('to_img_idx', id, {priority: 'event'});",
+          "});" ) ) )
 
 # create connection to local neo4j database
 con <- neo4j_api$new( url = pars$neo4j_url, user = pars$neo4j_user, password = pars$neo4j_pass )
@@ -64,6 +114,7 @@ s3_to_tmp <- function( path, uuid ) {
     if( file_ext( src ) %in% c( 'jpg', 'JPG', 'jpeg', 'JPEG' ) ) {
       file.rename( src, dest )
     } else { #otherwise convert to jpg with Image Magick
+      cat( "Converting...\n" )
       system2( "convert", args = paste( "'", src, "' '", dest, "'", sep = "" ) )
     }
   }
@@ -71,7 +122,7 @@ s3_to_tmp <- function( path, uuid ) {
 
 #setup reactive values
 react <- reactiveValues( run = NULL, style = NULL, draw = NULL, update = NULL, copy = NULL, valid_img_count = NULL, unreviewed_img_count = NULL, unreviewed_folder_count = NULL, unreviewed_n_folders = NULL )
-payload <- reactiveValues( query = NULL, graph = NULL, original_edges = NULL, from_meta = NULL, to_meta = NULL, edge_meta = NULL )
+payload <- reactiveValues( query = NULL, graph = NULL, original_graph = NULL, from = NULL, to = NULL, from_meta = NULL, to_meta = NULL, edge_meta = NULL, old_from = NULL, old_to = NULL )
 
 #database update functions
 update_node <- function( uuid, region, date, unusable, reviewed ) {
@@ -88,30 +139,89 @@ update_node <- function( uuid, region, date, unusable, reviewed ) {
   query %>% call_neo4j( con )
   }
 }
-update_edge <- function( from_uuid, to_uuid, label, basis, reviewed ) {
-  query <- paste0( "MATCH (from {uuid: '", from_uuid, "'}),(to {uuid:'", to_uuid, "'}) ",
-          "OPTIONAL MATCH (from)<-[oldrel]->(to) ",
-          "DETACH DELETE oldrel ",
-          "MERGE (from)<-[newrel:", label, "]->(to) ",
-          "ON CREATE SET newrel.basis = '", basis, "', newrel.reviewed = ", reviewed )
+
+update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
+  query <- paste0( "MATCH (from:Image), (to:Image) ",
+                   "WHERE from.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "'] ",
+                   "AND to.uuid IN ['", paste0( to_uuids, collapse = "', '" ), "'] ",
+                   "WITH from, to, from AS f, to AS t ",
+                   "OPTIONAL MATCH (f)<-[r]->(t) ",
+                   "DELETE r ",
+                   "MERGE (from)<-[new:", label, "]->(to) ",
+                   "SET new.basis = '", basis, "', new.reviewed = ", reviewed )
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
   #transitive (triadic) closures (anything greater than 4 is too slow)
-  query <- paste0( "MATCH (img1:Image)-[:IS_SAME*2..4]->(img2:Image) ",
+  query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..3]->(img2:Image) ",
                    "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME]->(img2) ",
-                   "AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '",paste0( to_uuids, collapse = "', '" ), "'] ",
                    "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
                    "MERGE (img1)<-[:IS_SAME {basis: 'propagated'}]->(img2)" )
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
+  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3]->(img1:Image)<-[:IS_SAME*2..3]->(img3:Image) ",
+                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:IS_SAME]->(img3) ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '",paste0( to_uuids, collapse = "', '" ), "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "MERGE (img2)<-[:IS_SAME {basis: 'propagated'}]->(img3)" )
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  
   #do the same but for all reviewed
-  query <- paste0( "MATCH (img1:Image)-[:IS_SAME*2..4 {reviewed: true}]->(img2:Image) ",
-                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME {reviewed: true}]->(img2) ",
-                   "AND img1.uuid IN ['", from_uuid, "', '",to_uuid, "'] ",
+  query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img2:Image) ",
+                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME {reviewed: true}|IS_SAME {basis: duplicate}]->(img2) ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
                    "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
                    "MERGE (img1)<-[r:IS_SAME]->(img2) ",
+                   "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
+                   "ON MATCH SET r.reviewed = true")
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  
+  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img1:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img3:Image) ",
+                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:IS_SAME {reviewed: true}]->(img3) ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "MERGE (img2)<-[r:IS_SAME]->(img3) ",
+                   "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
+                   "ON MATCH SET r.reviewed = true")
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  
+  #and four more for NOT_SAME
+  query <- paste0( "MATCH (img1:Image)-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img2:Image) ",
+                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:NOT_SAME|IS_SAME]->(img2) ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
+                   "MERGE (img1)<-[r:NOT_SAME {basis: propagated}]->(img2) ")
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  
+  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3]->(img1:Image)-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img3:Image) ",
+                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:NOT_SAME|IS_SAME]->(img3) ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "MERGE (img2)<-[r:NOT_SAME {basis: propagated}]->(img3) ")
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  
+  query <- paste0( "MATCH (img1:Image)-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img2:Image) ",
+                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:NOT_SAME {reviewed: true}|IS_SAME]->(img2) ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
+                   "MERGE (img1)<-[r:NOT_SAME]->(img2) ",
+                   "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
+                   "ON MATCH SET r.reviewed = true")
+  cat( "QUERY: ", query, "\n" )
+  query %>% call_neo4j( con )
+  
+  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img1:Image)-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img3:Image) ",
+                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:NOT_SAME {reviewed: true}|IS_SAME]->(img3) ",
+                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "MERGE (img2)<-[r:NOT_SAME]->(img3) ",
                    "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
                    "ON MATCH SET r.reviewed = true")
   cat( "QUERY: ", query, "\n" )
@@ -182,8 +292,11 @@ manual_query_action <- observeEvent( input$run_manual_query, {
 # processes response as "graph" payload
 # triggers "style" with increment
 run_query <- observeEvent( react$run, {
+  payload$old_from <- payload$from_meta$id
+  payload$old_to <- payload$to_meta$id
   payload$from_meta <- NULL
   payload$to_meta <- NULL
+  payload$edge_meta <- NULL
   # query db with progress bar         
   withProgress(message = 'Querying Database...', value = 0, {
     
@@ -194,6 +307,7 @@ run_query <- observeEvent( react$run, {
     cat( "QUERY: ", payload$query, "\n" )
     graph <- payload$query %>% call_neo4j( con, type = "graph" )
   
+    #@todo: move all this into a function
     if( length(graph) ) { #@todo: renderText() somehow if there are no results?
       # add potentially empty property columns
       node_cols <- tibble( unusable = NA, reviewed = NA, date = NA_character_, camera_date = NA_character_ )
@@ -205,10 +319,6 @@ run_query <- observeEvent( react$run, {
         distinct() %>%
         mutate( label = graph$nodes$label %>% unlist() %>% .[ . != "DUMMY" ] ) %>%
         add_column( !!!node_cols[!names( node_cols ) %in% names(.)] )
-      
-      #remove 'unusable' nodes, but re-add later
-      unusable <- graph$nodes %>% filter( unusable == T )
-      graph$nodes <- graph$nodes %>% filter( unusable != T | is.na(unusable) )
     
       # unnest relationships
       if( !is.null( graph$relationships ) ) {
@@ -217,6 +327,28 @@ run_query <- observeEvent( react$run, {
           rename( from = startNode, to = endNode, label = type ) %>%
           add_column( !!!edge_cols[!names( edge_cols ) %in% names(.)] )
       }
+      #pseudonodes from relationships (nested tibble)
+      igraph_object<- graph_from_data_frame( d = graph$relationships %>% filter( label == "IS_SAME" & basis %in% c( "duplicate", "cropped" ) & reviewed == T ) %>% select( from, to, everything() ), directed = F, vertices = graph$nodes )
+      
+      comp <- groups( components( igraph_object ) ) %>% map_df( ~ tibble( id = as.character(md5(paste0( sort( . ), collapse = ", ") ) ), members = list(.) ) )
+      graph$nodes <- graph$nodes %>%
+        mutate( group = comp[components( igraph_object )$membership, "id"] %>% .$id ) %>%
+        nest( data = !group ) %>%
+        select( id = group, data ) %>%
+        mutate( label = map_chr( data, ~unique( .$label ) ) )
+      
+      #drop the relationships we grouped
+      graph$relationships <- graph$relationships %>%
+        rowwise() %>%
+        mutate( keep = map2_lgl( from, to, ~ !any( sapply( comp$members, function(e) is.element( .x, e ) & is.element( .y, e ) ) ) ),
+                from = comp[which( sapply( comp$members, function(e) is.element( from, e ) ) ), "id"] %>% .$id,
+                to = comp[which( sapply( comp$members, function(e) is.element( to, e ) ) ), "id"] %>% .$id ) %>%
+        ungroup() %>%
+        filter( keep ) %>% select( -keep )
+      
+      #remove 'unusable' nodes (but re-add later)
+      unusable <- graph$nodes %>% mutate( unusable = map_lgl( data, ~all( .$unusable == T ) ) ) %>% filter( unusable == T ) %>% select( -unusable ) 
+      graph$nodes <- graph$nodes %>% mutate( unusable = map_lgl( data, ~all( .$unusable == T ) ) ) %>% filter( unusable != T | is.na(unusable) ) %>% select( -unusable )
       
       if( graph$nodes %>% filter( label == "Image" ) %>% nrow() > 1 ) {
         #create virtual relationships for any that aren't present
@@ -234,20 +366,21 @@ run_query <- observeEvent( react$run, {
                                                                                     rename( "from" = "to", "to" = "from" ) ),
                                                          by = c( "from", "to" ) ) )
             }
-        # overwrite ID as from*to, this works so long as there is only 1 relationship between each image node,
-        # and hopefully ensures bidirectional IDs, so long as there aren't two with the same product in a subgraph
+        #rewrite edge ids
         graph$relationships <- graph$relationships %>%
-          mutate( id = as.numeric(from) * as.numeric(to) )
+          rowwise() %>%
+          mutate( id = as.character( md5(paste0( label, basis, sort( c( from, to ) ), collapse = ", ") ) ) ) %>%
+          ungroup() %>%
+          distinct(id, .keep_all = T)
       }
       
       #re-add unusable nodes
       graph$nodes <- bind_rows( graph$nodes, unusable )
       
+      #sort edges
+      graph$relationships <- graph$relationships %>% rowwise %>% mutate( sort = paste0( sort( c( from, to ) ), collapse = ", ") ) %>% ungroup() %>% arrange(sort) %>% select( -sort )
+      
       payload$graph <- graph
-      cat("NODES:\n")
-      print( payload$graph$nodes )
-      cat("EDGES:\n")
-      print( payload$graph$relationships )
       
       #trigger styling
       react$style <- ifelse( is.null( react$style ), 0, react$style + 1 )
@@ -288,20 +421,24 @@ style_results <- observeEvent( react$style, {
 # displays "graph" payload
 # adds click actions to trigger inputs
 # triggers finishedDrawing reactive
-# returns VisNetwork
+# returns visNetwork
 draw_results <- eventReactive( react$draw, {
   graph <- payload$graph
-  payload$original_edges <- graph$relationships
   react$copy <- ifelse( is.null( react$copy ), 0, react$copy + 1 )
   visNetwork( graph$nodes, graph$relationships, height = '100%',
               submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) ) %>%
-  visEvents( type = "on", click = "function(properties) {
-  Shiny.setInputValue('edge_from_id', this.body.data.edges.get(properties.edges[0]).from, {priority: 'event'});
-  Shiny.setInputValue('edge_to_id',this.body.data.edges.get(properties.edges[0]).to, {priority: 'event'});
-  Shiny.setInputValue('edge_label', this.body.data.edges.get(properties.edges[0]).label, {priority: 'event'});
-  Shiny.setInputValue('edge_id', this.body.data.edges.get(properties.edges[0]).id, {priority: 'event'});}",
-  selectEdge = "function() { Shiny.setInputValue('graphSelected',true); }",
-  deselectEdge = "function() { Shiny.setInputValue('graphSelected',false); }" ) %>%
+  visEvents( type = "on",
+             click = paste0( "function(p) { ",
+                             "  keysEnabled = true;",
+                             "  graphSelected = true;",
+                             "  selectEdge(this.body.data.edges.get(p.edges[0]).from, ",
+                             "    this.body.data.edges.get(p.edges[0]).to, ",
+                             "    this.body.data.edges.get(p.edges[0]).label, ",
+                             "    this.body.data.edges.get(p.edges[0]).id",
+                             "  );",
+                             "}" ),
+             selectEdge = paste0( "function() { keysEnabled = true; graphSelected = true; }" ),
+             deselectEdge = paste0( "function() { keysEnabled = false; graphSelected = false; }" ) ) %>%
     visInteraction( dragNodes = F,
                     navigationButtons = T,
                     selectConnectedEdges = F )
@@ -312,23 +449,48 @@ draw_results <- eventReactive( react$draw, {
 # updates VisNetworkProxy
 update_results <- observeEvent( react$update, {
   graph <- payload$graph
+  #if a node was grouped, and thus our edge changed, try to find a new one
+  #@todo: could probably look for another duplicate or cropped here
+  if( length( which( graph$relationships$id == input$edge_id ) ) ) {
+    i <- which( graph$relationships$id == input$edge_id )
+  } else if( is.null(payload$old_from) | is.null(payload$old_to) ) {
+    new <- graph$nodes %>%
+      mutate( keep = map_lgl( data, ~ ifelse( is.null(payload$old_from), payload$old_to, payload$old_from ) %in% .$id )  ) %>%
+      filter( keep ) %>% select( id ) %>% .$id
+    i <- which( graph$relationships$id == graph$relationships %>%
+                  filter( ( from == new | to == new ) ) %>% slice(1) %>% .$id ) 
+  } else {
+    a <- graph$nodes %>%
+      mutate( keep = map_lgl( data, ~ payload$old_from %in% .$id )  ) %>%
+      filter( keep ) %>% select( id ) %>% .$id
+    b <- graph$nodes %>%
+        mutate( keep = map_lgl( data, ~ payload$old_to %in% .$id )  ) %>%
+      filter( keep ) %>% select( id ) %>% .$id  
+    i <- which( graph$relationships$id == graph$relationships %>%
+                  filter( ( from == a | to == a ) & ( from == b | to == b ) ) %>% slice(1) %>% .$id ) 
+  }
   visNetworkProxy( "graph" ) %>%
     visUpdateNodes(graph$nodes) %>%
     visUpdateEdges( graph$relationships ) %>%
-    visRemoveEdges( payload$original_edges$id[which( !payload$original_edges$id %in% graph$relationships$id )] ) %>%
-    visSetTitle( submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) )
-  i <- which( graph$relationships$id == input$edge_id )
+    visRemoveEdges( payload$original_graph$relationships$id[which( !payload$original_graph$relationships$id %in% graph$relationships$id )] ) %>%
+    visRemoveNodes( payload$original_graph$nodes$id[which( !payload$original_graph$nodes$id %in% graph$nodes$id )] ) %>%
+    visSetTitle( submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) ) %>%
+    visSetSelection( edgesId = graph$relationships$id[i] )
   session$sendCustomMessage( "simSelect", list( from = graph$relationships$from[i],
                                                 to = graph$relationships$to[i],
                                                 label = graph$relationships$label[i],
                                                 id = graph$relationships$id[i] ) )
+  session$sendCustomMessage( "setFromImgIDX", ifelse( is.null(payload$old_from), 1, input$from_img_idx ) )
+  session$sendCustomMessage( "setToImgIDX", ifelse( is.null(payload$old_to), 1, input$to_img_idx ) )
 })
 
 #"copy" reactive
 # copies/converts images to tempdir on new graph draw
 start_copy <- observeEvent( react$copy, {
   nodes <- payload$graph$nodes %>%
-    filter( label == "Image" )
+    filter( label == "Image" ) %>%
+    select( -id, -label ) %>%
+    unnest( cols = c(data) )
   withProgress( message = paste0( 'Copying Images...[1/', nrow(nodes), ']' ), value = 0, {
     for( i in 1:nrow( nodes ) ) {
       # increment progress bar
@@ -342,35 +504,57 @@ start_copy <- observeEvent( react$copy, {
 # sets from/to/edge _meta payloads
 watch_graph_click <- observeEvent( input$edge_id, {
   if( !input$edge_label %in% c( 'HAS_ENCOUNTER', 'HAS_IMAGE' ) ) {
-    payload$from_meta <- payload$graph$nodes %>% filter( id == input$edge_from_id )
-    payload$to_meta <- payload$graph$nodes %>% filter( id == input$edge_to_id )
+    payload$from <- payload$graph$nodes %>% filter( id == input$edge_from_id ) %>% select( -id, -label ) %>% unnest( cols = c(data) )
+    payload$to <- payload$graph$nodes %>% filter( id == input$edge_to_id )  %>% select( -id, -label ) %>% unnest( cols = c(data) )
     payload$edge_meta <- payload$graph$relationships %>% filter( id == input$edge_id )
     cat( "Edge Select: ", input$edge_id, "\n" )
   }
 })
 
-#"from_meta" reactive
-# populates from viewer
-# updates input values from meta
-# return svgPanZoom 
-draw_from <- eventReactive( payload$from_meta, {
-  updateDateInput( session, "from_date", label = NULL, value = payload$from_meta$date )
-  updateCheckboxInput( session, "from_unusable", label = NULL, value = ifelse( is.na( payload$from_meta$unusable ), F, payload$from_meta$unusable ) )
-  updateCheckboxInput( session, "from_reviewed", label = NULL, value = ifelse( is.na( payload$from_meta$reviewed ), F, payload$from_meta$reviewed ) )
-  updateTextInput( session, "from_region", label = NULL, value = payload$from_meta$region )
-  return( draw_img( payload$from_meta$uuid ) )
+#"from" reactive
+# sets from viewer img index
+from <- observeEvent( payload$from, {
+  session$sendCustomMessage( "setFromImgIDX", 1 )
 })
 
-#"to_meta" reactive
-# populates to viewer
-# updates input values from meta
+# "from_img_idx" (input) reactive
+# populates from viewer
+# updates input field values from meta
 # return svgPanZoom 
-draw_to <- eventReactive( payload$to_meta, {
-  updateDateInput( session, "to_date", label = NULL, value = payload$to_meta$date )
-  updateCheckboxInput( session, "to_unusable", label = NULL, value = ifelse( is.na( payload$to_meta$unusable ), F, payload$to_meta$unusable ) )
-  updateCheckboxInput( session, "to_reviewed", label = NULL, value = ifelse( is.na( payload$to_meta$reviewed ), F, payload$to_meta$reviewed ) )
-  updateTextInput( session, "to_region", label = NULL, value = payload$to_meta$region )
-  return( draw_img( payload$to_meta$uuid ) )
+draw_from <- eventReactive( input$from_img_idx, {
+  payload$from_meta <- payload$from %>% slice( input$from_img_idx )
+  img <- payload$from_meta
+  output$from_id <- renderText({ paste0( img %>% .$uuid, " [", input$from_img_idx, "/", nrow(payload$from), "]" ) })
+  output$from_path <- renderText({ img %>% .$source_file })
+  output$from_exif_date <- renderText({ img %>% .$camera_date })
+  updateDateInput( session, "from_date", label = NULL, value = img %>% .$date )
+  updateCheckboxInput( session, "from_unusable", label = NULL, value = ifelse( is.na( img %>% .$unusable ), F, img %>% .$unusable ) )
+  updateCheckboxInput( session, "from_reviewed", label = NULL, value = ifelse( is.na( img %>% .$reviewed ), F, img %>% .$reviewed ) )
+  updateTextInput( session, "from_region", label = NULL, value = img %>% .$region )
+  return( draw_img( img %>% .$uuid ) )
+})
+
+#"to" reactive
+# sets to viewer img index
+from <- observeEvent( payload$to, {
+  session$sendCustomMessage( "setToImgIDX", 1 )
+})
+
+# "to_img_idx" (input) reactive
+# populates to viewer
+# updates input field values from meta
+# return svgPanZoom 
+draw_to <- eventReactive( input$to_img_idx, {
+  payload$to_meta <- payload$to %>% slice( input$to_img_idx )
+  img <- payload$to_meta
+  output$to_id <- renderText({ paste0( img %>% .$uuid, " [", input$to_img_idx, "/", nrow(payload$to), "]" ) })
+  output$to_path <- renderText({ img %>% .$source_file })
+  output$to_exif_date <- renderText({ img %>% .$camera_date })
+  updateDateInput( session, "to_date", label = NULL, value = img %>% .$date )
+  updateCheckboxInput( session, "to_unusable", label = NULL, value = ifelse( is.na( img %>% .$unusable ), F, img %>% .$unusable ) )
+  updateCheckboxInput( session, "to_reviewed", label = NULL, value = ifelse( is.na( img %>% .$reviewed ), F, img %>% .$reviewed ) )
+  updateTextInput( session, "to_region", label = NULL, value = img %>% .$region )
+  return( draw_img( img %>% .$uuid ) )
 })
 
 #"edge_meta" reactive
@@ -390,6 +574,7 @@ update_from <- observeEvent( input$save_from, {
   if( !is.null(payload$from_meta) ) {
     if( input$from_region != payload$from_meta$region | input$from_date != payload$from_meta$date | input$from_unusable != ifelse( is.na( payload$from_meta$unusable ), F, payload$from_meta$unusable ) | input$from_reviewed != ifelse( is.na( payload$from_meta$reviewed ), F, payload$from_meta$reviewed ) ) {
       withProgress( message = "Updating Database...", value = 0, {
+        payload$original_graph <- payload$graph
         update_node( payload$from_meta$uuid, input$from_region, input$from_date, ifelse( input$from_unusable == F, "null", input$from_unusable ), ifelse( input$from_reviewed == F, "null", input$from_reviewed ) )
         react$run <- ifelse( is.null( react$run ), 0, react$run + 1 )
       })
@@ -405,6 +590,7 @@ update_to <- observeEvent( input$save_to, {
   if( !is.null(payload$to_meta) ) {
     if( input$to_region != payload$to_meta$region | input$to_date != payload$to_meta$date | input$to_unusable != ifelse( is.na( payload$to_meta$unusable ), F, payload$to_meta$unusable ) | input$to_reviewed != ifelse( is.na( payload$to_meta$reviewed ), F, payload$to_meta$reviewed ) ) {
       withProgress( message = "Updating Database...", value = 0.5, {
+        payload$original_graph <- payload$graph
         update_node( payload$to_meta$uuid, input$to_region, input$to_date, ifelse( input$to_unusable == F, "null", input$to_unusable ), ifelse( input$to_reviewed == F, "null", input$to_reviewed ) )
         react$run <- ifelse( is.null( react$run ), 0, react$run + 1 )
       })
@@ -418,47 +604,56 @@ update_to <- observeEvent( input$save_to, {
 # and update of graph
 update_classification <- observeEvent( input$classify_label, {
   withProgress( message = "Updating Database...", value = 0.5, {
-    update_edge( payload$from_meta$uuid, payload$to_meta$uuid, input$label, input$basis, input$reviewed )
+    payload$original_graph <- payload$graph
+    update_edge( payload$from$uuid, payload$to$uuid, input$label, input$basis, input$reviewed )
     react$run <- ifelse( is.null( react$run ), 0, react$run + 1 )
   })
 })
 
-#script to forward keydown to shiny input, and create custom handler for simulating on click graph event
-# (visSetSelection doesn't seem to trigger the on click defined in the visNetwork)
-tags$script( paste0( "$(document).on('keydown', function (e) {Shiny.setInputValue('keydown', e.which, {priority: 'event'});});",
-                     "Shiny.addCustomMessageHandler('simSelect', function(edge) { ",
-                     "Shiny.setInputValue('edge_from_id', edge.from, {priority: 'event'});",
-                     "Shiny.setInputValue('edge_to_id', edge.to, {priority: 'event'});",
-                     "Shiny.setInputValue('edge_label', edge.label, {priority: 'event'});",
-                     "Shiny.setInputValue('edge_id', edge.id, {priority: 'event'});",
-                     "});" ) )
-
 #"keydown" (input) reactive
-# L/R arrows navigate edges (skipping to next unreviewed is present)
+# L/R arrows navigate edges (skipping to next unreviewed if present)
 # simulates graph select on prev/next arrow keydown (this then populates edge viewer)
-keydown <- observeEvent( input$keydown, {
-  if( ifelse( is.null( input$graphSelected ), F, input$graphSelected ) ) {
+# 'x','c' navigate 'from' images for grouped sets
+# ',','.' navigate 'to' images for grouped sets
+keydown <- observeEvent( input$keys, {
+  if( ifelse( is.null( input$keys$`37` ), F, input$keys$`37` ) | ifelse( is.null( input$keys$`39` ), F, input$keys$`39` ) ) { #L/R arrows
     relationships <- payload$graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) )
-    if( input$keydown == 37 | input$keydown == 39 ) { #L/R arrows
-      i <- which( relationships$id == input$edge_id )
-      unreviewed_i <- which( relationships$reviewed != T | is.na( relationships$reviewed )  )
-      if( input$keydown == 37 ) {  #back
-        if( length(unreviewed_i) > 0 ) {
-          i <- ifelse(  i >= max(unreviewed_i), min(unreviewed_i), unreviewed_i[which( unreviewed_i >= i + 1 )][1] )
-        } else {
-          i <- ifelse(  i == 1, length( relationships$id ), i - 1 )
-        }
-      } else if( input$keydown == 39 ) {  #forward
-        if( length(unreviewed_i) > 0 ) {
-          i <- ifelse(  i <= min(unreviewed_i), max(unreviewed_i), rev(unreviewed_i[which( unreviewed_i <= i - 1 )])[1] )
-        } else {
-          i <- ifelse( i == length( relationships$id ), 1, i + 1 )
-        }
+    i <- which( relationships$id == input$edge_id )
+    unreviewed_i <- which( relationships$reviewed != T | is.na( relationships$reviewed )  )
+    if( ifelse( is.null( input$keys$`37` ), F, input$keys$`37` ) ) {  # left arrow
+      if( length(unreviewed_i) > 0 ) {
+        i <- ifelse(  i >= max(unreviewed_i), min(unreviewed_i), unreviewed_i[which( unreviewed_i >= i + 1 )][1] )
+      } else {
+        i <- ifelse(  i == 1, length( relationships$id ), i - 1 )
       }
-      visNetworkProxy( "graph" ) %>% visSetSelection( edgesId = relationships$id[i] )
-      #can't get on click to fire through visSetSelection, so doing manually
-      session$sendCustomMessage( "simSelect", list( from = relationships$from[i], to = relationships$to[i], label = relationships$label[i], id = relationships$id[i] ) )
+    } else if( ifelse( is.null( input$keys$`39` ), F, input$keys$`39` ) ) {  # right arrow
+      if( length(unreviewed_i) > 0 ) {
+        i <- ifelse(  i <= min(unreviewed_i), max(unreviewed_i), rev(unreviewed_i[which( unreviewed_i <= i - 1 )])[1] )
+      } else {
+        i <- ifelse( i == length( relationships$id ), 1, i + 1 )
+      }
     }
+    visNetworkProxy( "graph" ) %>% visSetSelection( edgesId = relationships$id[i] )
+    #can't get on click to fire through visSetSelection, so doing manually
+    session$sendCustomMessage( "simSelect", list( from = relationships$from[i], to = relationships$to[i], label = relationships$label[i], id = relationships$id[i] ) )
+  } else if( ifelse( is.null( input$keys$`88` ), F, input$keys$`88` ) | ifelse( is.null( input$keys$`67` ), F, input$keys$`67` ) ) {
+    nodes <- payload$from
+    j <- input$from_img_idx
+    if( ifelse( is.null( input$keys$`88` ), F, input$keys$`88` ) ) {  # x
+      j <- ifelse(  j == 1, length( nodes$id ), j - 1 )
+    } else if( ifelse( is.null( input$keys$`67` ), F, input$keys$`67` ) ) {  # c
+      j <- ifelse( j == length( nodes$id ), 1, j + 1 )
+    }
+    session$sendCustomMessage( "setFromImgIDX", j )
+  } else if( ifelse( is.null( input$keys$`188` ), F, input$keys$`188` ) | ifelse( is.null( input$keys$`190` ), F, input$keys$`190` ) ) {
+    nodes <- payload$to
+    j <- input$to_img_idx
+    if( ifelse( is.null( input$keys$`188` ), F, input$keys$`188` ) ) {  # <
+      j <- ifelse(  j == 1, length( nodes$id ), j - 1 )
+    } else if( ifelse( is.null( input$keys$`190` ), F, input$keys$`190` ) ) {  # >
+      j <- ifelse( j == length( nodes$id ), 1, j + 1 )
+    }
+    session$sendCustomMessage( "setToImgIDX", j )
   }
 })
 
@@ -491,7 +686,7 @@ db_stats <- observeEvent( input$refresh, {
                                              ##
                                              "WITH f, COUNT(i) AS usable, COLLECT(id(i)) AS ids ",
                                              "WHERE SIZE([ (i)<-[:HAS_IMAGE]-(f) WHERE COALESCE(i.reviewed, false) = true | i ] ) <> usable ",
-                                             "OR SIZE( [ (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids AND COALESCE(r.reviewed, false) = true | r ] ) <> ( usable * ( usable - 1 ) ) / 2 ",
+                                             "OR SIZE( [ (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids AND COALESCE(r.reviewed, false) = true | r ] ) < ( usable * ( usable - 1 ) ) / 2 ",
                                              "RETURN f.path")
     cat( "QUERY: ", unreviewed_folder_count_query, "\n" )
     unreviewed_folders <-  unreviewed_folder_count_query %>% call_neo4j( con, type = "row" )
@@ -512,13 +707,7 @@ output$valid_images <- renderText({ react$valid_img_count })
 output$unreviewed_images <- renderText({ react$unreviewed_img_count })
 output$unreviewed_folders <- renderText({ react$unreviewed_folder_count })
 output$graph <- renderVisNetwork({ draw_results() })
-output$from_id <- renderText({ payload$from_meta$uuid })
-output$from_path <- renderText({ payload$from_meta$source_file })
-output$from_exif_date <- renderText({ payload$from_meta$camera_date })
 output$from_image <- renderSvgPanZoom({ draw_from() })
-output$to_id <- renderText({ payload$to_meta$uuid })
-output$to_path <- renderText({ payload$to_meta$source_file })
-output$to_exif_date <- renderText({ payload$to_meta$camera_date })
 output$to_image <- renderSvgPanZoom({ draw_to() })
 
 ```
