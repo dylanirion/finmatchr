@@ -172,7 +172,7 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   #do the same but for all reviewed
   query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img2:Image) ",
                    "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME {reviewed: true}]->(img2) ",
-                   "AND NOT (img1)<-[:IS_SAME {basis: duplicate}]->(img2) ",
+                   "AND NOT (img1)<-[:IS_SAME {basis: 'duplicate'}]->(img2) ",
                    "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
                    "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
                    "MERGE (img1)<-[r:IS_SAME]->(img2) ",
