@@ -35,7 +35,7 @@ font.color.map <- c( Event = '#FFFFFFFF', Encounter = '#FFFFFFFF', Image = '#343
 font.size.map <- c( IS_SAME = 0, UNSURE = 0, NOT_SAME = 0, HAS_ENCOUNTER = 10, HAS_IMAGE = 10, VIRTUAL = 0 )
 font.align.map <- c( IS_SAME = NULL, UNSURE = NULL, NOT_SAME = NULL, HAS_ENCOUNTER = "top", HAS_IMAGE = "top", VIRTUAL = NULL )
 physics.map <- c( IS_SAME = T, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = F, HAS_IMAGE = F, VIRTUAL = F )
-chosen.map <- c( IS_SAME = T, UNSURE = T, NOT_SAME = T, HAS_ENCOUNTER = F, HAS_IMAGE = F, VIRTUAL = T )
+chosen.map <- c( IS_SAME = T, UNSURE = T, NOT_SAME = T, HAS_ENCOUNTER = F, HAS_IMAGE = F, VIRTUAL = T, Image = T, Encounter = F, Event = F )
 smooth.map <- c( IS_SAME = F, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = F, HAS_IMAGE = F, VIRTUAL = F )
 dashes.map <- c( IS_SAME = F, UNSURE = F, NOT_SAME = F, HAS_ENCOUNTER = T, HAS_IMAGE = T, VIRTUAL = F )
 
@@ -164,7 +164,7 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3]->(img1:Image)<-[:IS_SAME*2..3]->(img3:Image) ",
                    "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:IS_SAME]->(img3) ",
                    "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '",paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
                    "MERGE (img2)<-[:IS_SAME {basis: 'propagated'}]->(img3)" )
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
@@ -184,7 +184,7 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img1:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img3:Image) ",
                    "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:IS_SAME {reviewed: true}]->(img3) ",
                    "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
                    "MERGE (img2)<-[r:IS_SAME]->(img3) ",
                    "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
                    "ON MATCH SET r.reviewed = true")
@@ -192,7 +192,7 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   query %>% call_neo4j( con )
   
   #and four more for NOT_SAME
-  query <- paste0( "MATCH (img1:Image)-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img2:Image) ",
+  query <- paste0( "MATCH (img1:Image)<-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img2:Image) ",
                    "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:NOT_SAME|IS_SAME]->(img2) ",
                    "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
                    "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
@@ -200,15 +200,15 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3]->(img1:Image)-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img3:Image) ",
+  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3]->(img1:Image)<-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img3:Image) ",
                    "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:NOT_SAME|IS_SAME]->(img3) ",
                    "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
                    "MERGE (img2)<-[r:NOT_SAME {basis: 'propagated'}]->(img3) ")
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  query <- paste0( "MATCH (img1:Image)-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img2:Image) ",
+  query <- paste0( "MATCH (img1:Image)<-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img2:Image) ",
                    "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:NOT_SAME {reviewed: true}]->(img2) ",
                    "AND NOT (img1)<-[:IS_SAME]->(img2) ",
                    "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
@@ -219,11 +219,11 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img1:Image)-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img3:Image) ",
+  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img1:Image)<-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img3:Image) ",
                    "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:NOT_SAME {reviewed: true}]->(img3) ",
                    "AND NOT (img2)<-[:IS_SAME]->(img3) ",
                    "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) ",
+                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
                    "MERGE (img2)<-[r:NOT_SAME]->(img3) ",
                    "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
                    "ON MATCH SET r.reviewed = true")
@@ -400,6 +400,7 @@ style_results <- observeEvent( react$style, {
     mutate( shape = "circle",
             color.background = recode( label, !!!color.map ),
             font.color = recode( label, !!!font.color.map ),
+            chosen = recode( label, !!!chosen.map ),
             #title = case_when( label == 'Event' ~ paste0( '<p><b>', uuid, '</b><br>', date, '</p>' ), label == 'Encounter' ~ paste0( '<p><b>', uuid, '</b><br>', date, '</p>' ), label == 'Image' ~ paste0( '<p><b>', uuid, '</b><br>', source_file, '<br>', camera_date, '<br>', date, '</p>' ) )
             )
   graph$relationships <- graph$relationships %>%
@@ -434,11 +435,19 @@ draw_results <- eventReactive( react$draw, {
              click = paste0( "function(p) { ",
                              "  keysEnabled = true;",
                              "  graphSelected = true;",
-                             "  selectEdge(this.body.data.edges.get(p.edges[0]).from, ",
-                             "    this.body.data.edges.get(p.edges[0]).to, ",
-                             "    this.body.data.edges.get(p.edges[0]).label, ",
-                             "    this.body.data.edges.get(p.edges[0]).id",
-                             "  );",
+                             "  if( typeof p.edges[0] === 'undefined' ) { ",
+                             "    selectEdge(this.body.data.nodes.get(p.nodes[0]).id, ",
+                             "      null, ",
+                             "      null, ",
+                             "      'EDIT SINGLE' ",
+                             "    );",                             
+                             "  } else if( typeof p.nodes[0] === 'undefined' ) { ",
+                             "    selectEdge(this.body.data.edges.get(p.edges[0]).from, ",
+                             "      this.body.data.edges.get(p.edges[0]).to, ",
+                             "      this.body.data.edges.get(p.edges[0]).label, ",
+                             "      this.body.data.edges.get(p.edges[0]).id ",
+                             "    );",                             
+                             "  }",
                              "}" ),
              selectEdge = paste0( "function() { keysEnabled = true; graphSelected = true; }" ),
              deselectEdge = paste0( "function() { keysEnabled = false; graphSelected = false; }" ) ) %>%
@@ -506,12 +515,20 @@ start_copy <- observeEvent( react$copy, {
 #"edge_id" (input) reactive
 # sets from/to/edge _meta payloads
 watch_graph_click <- observeEvent( input$edge_id, {
-  if( !input$edge_label %in% c( 'HAS_ENCOUNTER', 'HAS_IMAGE' ) ) {
-    payload$from <- payload$graph$nodes %>% filter( id == input$edge_from_id ) %>% select( -id, -label ) %>% unnest( cols = c(data) )
-    payload$to <- payload$graph$nodes %>% filter( id == input$edge_to_id )  %>% select( -id, -label ) %>% unnest( cols = c(data) )
-    payload$edge_meta <- payload$graph$relationships %>% filter( id == input$edge_id )
-    cat( "Edge Select: ", input$edge_id, "\n" )
+  if( input$edge_id != 'EDIT SINGLE' ) {
+      if( !input$edge_label %in% c( 'HAS_ENCOUNTER', 'HAS_IMAGE' ) ) {
+      payload$from <- payload$graph$nodes %>% filter( id == input$edge_from_id ) %>% select( -id, -label ) %>% unnest( cols = c(data) )
+      payload$to <- payload$graph$nodes %>% filter( id == input$edge_to_id )  %>% select( -id, -label ) %>% unnest( cols = c(data) )
+      payload$edge_meta <- payload$graph$relationships %>% filter( id == input$edge_id )
+      cat( "Edge Select: ", input$edge_id, "\n" )
+    }
+  } else {
+      payload$from <- payload$graph$nodes %>% filter( id == input$edge_from_id ) %>% select( -id, -label ) %>% unnest( cols = c(data) )
+      payload$to <- NULL
+      payload$edge_meta <- NULL
+      cat( "Node Select: ", input$edge_from_id, "\n" )
   }
+
 })
 
 #"from" reactive
@@ -525,49 +542,77 @@ from <- observeEvent( payload$from, {
 # updates input field values from meta
 # return svgPanZoom 
 draw_from <- eventReactive( input$from_img_idx, {
-  payload$from_meta <- payload$from %>% slice( input$from_img_idx )
-  img <- payload$from_meta
-  output$from_id <- renderText({ paste0( img %>% .$uuid, " [", input$from_img_idx, "/", nrow(payload$from), "]" ) })
-  output$from_path <- renderText({ img %>% .$source_file })
-  output$from_exif_date <- renderText({ img %>% .$camera_date })
-  updateDateInput( session, "from_date", label = NULL, value = img %>% .$date )
-  updateCheckboxInput( session, "from_unusable", label = NULL, value = ifelse( is.na( img %>% .$unusable ), F, img %>% .$unusable ) )
-  updateCheckboxInput( session, "from_reviewed", label = NULL, value = ifelse( is.na( img %>% .$reviewed ), F, img %>% .$reviewed ) )
-  updateTextInput( session, "from_region", label = NULL, value = img %>% .$region )
-  return( draw_img( img %>% .$uuid ) )
+  if( !is.null(payload$from ) ) {
+    payload$from_meta <- payload$from %>% slice( input$from_img_idx )
+    img <- payload$from_meta
+    output$from_id <- renderText({ paste0( img %>% .$uuid, " [", input$from_img_idx, "/", nrow(payload$from), "]" ) })
+    output$from_path <- renderText({ img %>% .$source_file })
+    output$from_exif_date <- renderText({ img %>% .$camera_date })
+    updateDateInput( session, "from_date", label = NULL, value = img %>% .$date )
+    updateCheckboxInput( session, "from_unusable", label = NULL, value = ifelse( is.na( img %>% .$unusable ), F, img %>% .$unusable ) )
+    updateCheckboxInput( session, "from_reviewed", label = NULL, value = ifelse( is.na( img %>% .$reviewed ), F, img %>% .$reviewed ) )
+    updateTextInput( session, "from_region", label = NULL, value = img %>% .$region )
+    return( draw_img( img %>% .$uuid ) )
+  } else {
+    output$from_id <- renderText({ "" })
+    output$from_path <- renderText({ "" })
+    output$from_exif_date <- renderText({ "" })
+    updateDateInput( session, "from_date", label = NULL, value = NA )
+    updateCheckboxInput( session, "from_unusable", label = NULL, value = F )
+    updateCheckboxInput( session, "from_reviewed", label = NULL, value = F )
+    updateTextInput( session, "from_region", label = NULL, value = "" )
+    return(NULL)
+  }
 })
 
 #"to" reactive
 # sets to viewer img index
 from <- observeEvent( payload$to, {
   session$sendCustomMessage( "setToImgIDX", 1 )
-})
+}, ignoreNULL = F )
 
 # "to_img_idx" (input) reactive
 # populates to viewer
 # updates input field values from meta
 # return svgPanZoom 
 draw_to <- eventReactive( input$to_img_idx, {
-  payload$to_meta <- payload$to %>% slice( input$to_img_idx )
-  img <- payload$to_meta
-  output$to_id <- renderText({ paste0( img %>% .$uuid, " [", input$to_img_idx, "/", nrow(payload$to), "]" ) })
-  output$to_path <- renderText({ img %>% .$source_file })
-  output$to_exif_date <- renderText({ img %>% .$camera_date })
-  updateDateInput( session, "to_date", label = NULL, value = img %>% .$date )
-  updateCheckboxInput( session, "to_unusable", label = NULL, value = ifelse( is.na( img %>% .$unusable ), F, img %>% .$unusable ) )
-  updateCheckboxInput( session, "to_reviewed", label = NULL, value = ifelse( is.na( img %>% .$reviewed ), F, img %>% .$reviewed ) )
-  updateTextInput( session, "to_region", label = NULL, value = img %>% .$region )
-  return( draw_img( img %>% .$uuid ) )
+  if( !is.null(payload$to ) ) {
+    payload$to_meta <- payload$to %>% slice( input$to_img_idx )
+    img <- payload$to_meta
+    output$to_id <- renderText({ paste0( img %>% .$uuid, " [", input$to_img_idx, "/", nrow(payload$to), "]" ) })
+    output$to_path <- renderText({ img %>% .$source_file })
+    output$to_exif_date <- renderText({ img %>% .$camera_date })
+    updateDateInput( session, "to_date", label = NULL, value = img %>% .$date )
+    updateCheckboxInput( session, "to_unusable", label = NULL, value = ifelse( is.na( img %>% .$unusable ), F, img %>% .$unusable ) )
+    updateCheckboxInput( session, "to_reviewed", label = NULL, value = ifelse( is.na( img %>% .$reviewed ), F, img %>% .$reviewed ) )
+    updateTextInput( session, "to_region", label = NULL, value = img %>% .$region )
+    return( draw_img( img %>% .$uuid ) )
+  } else {
+    output$to_id <- renderText({ "" })
+    output$to_path <- renderText({ "" })
+    output$to_exif_date <- renderText({ "" })
+    updateDateInput( session, "to_date", label = NULL, value = NA )
+    updateCheckboxInput( session, "to_unusable", label = NULL, value = F )
+    updateCheckboxInput( session, "to_reviewed", label = NULL, value = F )
+    updateTextInput( session, "to_region", label = NULL, value = "" )
+    return(NULL)
+  }
 })
 
 #"edge_meta" reactive
 # populates edge viewer
 # updates input values from meta
 draw_classification <- observeEvent( payload$edge_meta, {
-  updateRadioButtons( session, "label", label = NULL, choices = NULL, selected = ifelse( payload$edge_meta$label == "VIRTUAL", "UNSURE", payload$edge_meta$label ) )
+  if( !is.null(payload$edge_meta ) ) {
+    updateRadioButtons( session, "label", label = NULL, choices = NULL, selected = ifelse( payload$edge_meta$label == "VIRTUAL", "UNSURE", payload$edge_meta$label ) )
     updateSelectInput( session, "basis", label = NULL, choices = NULL, selected = ifelse( is.na( payload$edge_meta$basis ), "", payload$edge_meta$basis ) )
     updateCheckboxInput( session, "reviewed", label = NULL, value = ifelse( is.na( payload$edge_meta$reviewed ), F, payload$edge_meta$reviewed ) )
-})
+  } else {
+    updateRadioButtons( session, "label", label = NULL, choices = NULL, selected = "UNSURE" )
+    updateSelectInput( session, "basis", label = NULL, choices = NULL, selected = "" )
+    updateCheckboxInput( session, "reviewed", label = NULL, value = F )
+  }
+}, ignoreNULL = F )
 
 #"save_from" (input) reactive
 # updates node in database if any property values have changed
