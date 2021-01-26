@@ -152,79 +152,64 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  #transitive (triadic) closures (anything greater than 4 is too slow)
-  query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..3]->(img2:Image) ",
-                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME]->(img2) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '",paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
-                   "MERGE (img1)<-[:IS_SAME {basis: 'propagated'}]->(img2)" )
+  #transitive closures
+  nodes <- payload$graph$nodes %>%
+    filter( label == "Image" ) %>%
+    select( -id, -label ) %>%
+    unnest( cols = c(data) )
+  #propagate IS_SAME through IS_SAME (unreviewed)
+  query <- paste0( "MATCH (from:Image)-[:IS_SAME*2..2]->(to:Image) ",
+                   "WHERE id(from) <> id(to) ",
+                   "AND NOT (from)<-[:IS_SAME]->(to) ",
+                   "AND from.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND to.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND COALESCE(from.unusable, false) <> true ",
+                   "AND COALESCE(to.unusable, false) <> true ",
+                   "MERGE (from)<-[:IS_SAME {basis: 'propagated'}]->(to)" )
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3]->(img1:Image)<-[:IS_SAME*2..3]->(img3:Image) ",
-                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:IS_SAME]->(img3) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '",paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
-                   "MERGE (img2)<-[:IS_SAME {basis: 'propagated'}]->(img3)" )
-  cat( "QUERY: ", query, "\n" )
-  query %>% call_neo4j( con )
-  
-  #do the same but for all reviewed
-  query <- paste0( "MATCH (img1:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img2:Image) ",
-                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:IS_SAME {reviewed: true}]->(img2) ",
-                   "AND NOT (img1)<-[:IS_SAME {basis: 'duplicate'}]->(img2) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
-                   "MERGE (img1)<-[r:IS_SAME]->(img2) ",
+  #propagate IS_SAME (reviewed) through IS_SAME (reviewed)
+  query <- paste0( "MATCH (from:Image)-[:IS_SAME*2..2 {reviewed: true}]->(to:Image) ",
+                   "WHERE id(from) <> id(to) ",
+                   "AND NOT (from)<-[:IS_SAME {reviewed: true}]->(to) ",
+                   "AND NOT (from)<-[:IS_SAME {basis: 'duplicate'}]->(to) ",
+                   "AND from.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND to.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND COALESCE(from.unusable, false) <> true ",
+                   "AND COALESCE(to.unusable, false) <> true ",
+                   "MERGE (from)<-[r:IS_SAME]->(to) ",
                    "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
                    "ON MATCH SET r.reviewed = true")
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img1:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img3:Image) ",
-                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:IS_SAME {reviewed: true}]->(img3) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
-                   "MERGE (img2)<-[r:IS_SAME]->(img3) ",
-                   "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
-                   "ON MATCH SET r.reviewed = true")
+  #propagate NOT_SAME through NOT_SAME-IS_SAME (unreviewed)
+  query <- paste0( "MATCH (from:Image)<-[:NOT_SAME]-(int:Image)-[:IS_SAME*2..2]->(to:Image) ",
+                   "WHERE id(from) <> id(to) ",
+                   "AND NOT (from)<-[:NOT_SAME|IS_SAME]->(to) ",
+                   "AND from.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND int.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND to.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND COALESCE(from.unusable, false) <> true ",
+                   "AND COALESCE(int.unusable, false) <> true ",
+                   "AND COALESCE(to.unusable, false) <> true ",
+                   "MERGE (from)<-[r:NOT_SAME {basis: 'propagated'}]->(to) ")
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
-  #and four more for NOT_SAME
-  query <- paste0( "MATCH (img1:Image)<-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img2:Image) ",
-                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:NOT_SAME|IS_SAME]->(img2) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
-                   "MERGE (img1)<-[r:NOT_SAME {basis: 'propagated'}]->(img2) ")
-  cat( "QUERY: ", query, "\n" )
-  query %>% call_neo4j( con )
-  
-  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3]->(img1:Image)<-[:NOT_SAME]->(:Image)<-[:IS_SAME*2..3]->(img3:Image) ",
-                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:NOT_SAME|IS_SAME]->(img3) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
-                   "MERGE (img2)<-[r:NOT_SAME {basis: 'propagated'}]->(img3) ")
-  cat( "QUERY: ", query, "\n" )
-  query %>% call_neo4j( con )
-  
-  query <- paste0( "MATCH (img1:Image)<-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img2:Image) ",
-                   "WHERE id(img1) <> id(img2) AND NOT (img1)<-[:NOT_SAME {reviewed: true}]->(img2) ",
-                   "AND NOT (img1)<-[:IS_SAME]->(img2) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true ",
-                   "MERGE (img1)<-[r:NOT_SAME]->(img2) ",
-                   "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
-                   "ON MATCH SET r.reviewed = true")
-  cat( "QUERY: ", query, "\n" )
-  query %>% call_neo4j( con )
-  
-  query <- paste0( "MATCH (img2:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img1:Image)<-[:NOT_SAME {reviewed: true}]->(:Image)<-[:IS_SAME*2..3 {reviewed: true}]->(img3:Image) ",
-                   "WHERE id(img2) <> id(img3) AND NOT (img2)<-[:NOT_SAME {reviewed: true}]->(img3) ",
-                   "AND NOT (img2)<-[:IS_SAME]->(img3) ",
-                   "AND img1.uuid IN ['", paste0( from_uuids, collapse = "', '" ), "', '", paste0( to_uuids, collapse = "', '" ), "'] ",
-                   "AND COALESCE(img1.unusable, false) <> true AND COALESCE(img2.unusable, false) <> true AND COALESCE(img3.unusable, false) <> true ",
-                   "MERGE (img2)<-[r:NOT_SAME]->(img3) ",
+  #propagate NOT_SAME (reviewed) through NOT_SAME-IS_SAME (reviewed)
+  query <- paste0( "MATCH (from:Image)<-[:NOT_SAME {reviewed: true}]-(int:Image)-[:IS_SAME*2..2 {reviewed: true}]->(to:Image) ",
+                   "WHERE id(from) <> id(to) ",
+                   "AND NOT (from)<-[:NOT_SAME {reviewed: true}]->(to) ",
+                   "AND NOT (from)<-[:IS_SAME]->(to) ",
+                   "AND from.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND int.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND to.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND COALESCE(from.unusable, false) <> true ",
+                   "AND COALESCE(int.unusable, false) <> true ",
+                   "AND COALESCE(to.unusable, false) <> true ",
+                   "MERGE (from)<-[r:NOT_SAME]->(to) ",
                    "ON CREATE SET r.basis = 'propagated', r.reviewed = true ",
                    "ON MATCH SET r.reviewed = true")
   cat( "QUERY: ", query, "\n" )
