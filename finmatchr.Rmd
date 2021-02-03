@@ -30,7 +30,7 @@ if( Sys.which("convert") == "" ) { stop( "`convert` not found, please make sure 
 pars <- params
 
 #some styling maps
-color.map <- c( IS_SAME = '#5CB85CFF', UNSURE = '#F0AD4EFF', NOT_SAME = '#D9534FFF', HAS_ENCOUNTER = '#FFC107FF', HAS_IMAGE = '#FFC107FF', VIRTUAL = '#F2F2F2FF', Event = '#440154FF', Encounter = '#21908CFF', Image = '#FDE725FF' )
+color.map <- c( IS_SAME = '#5CB85CFF', UNSURE = '#F0AD4EFF', NOT_SAME = '#D9534F50', HAS_ENCOUNTER = '#FFC107FF', HAS_IMAGE = '#FFC107FF', VIRTUAL = '#F2F2F2FF', Event = '#440154FF', Encounter = '#21908CFF', Image = '#FDE725FF' )
 font.color.map <- c( Event = '#FFFFFFFF', Encounter = '#FFFFFFFF', Image = '#343434FF' )
 font.size.map <- c( IS_SAME = 0, UNSURE = 0, NOT_SAME = 0, HAS_ENCOUNTER = 10, HAS_IMAGE = 10, VIRTUAL = 0 )
 font.align.map <- c( IS_SAME = NULL, UNSURE = NULL, NOT_SAME = NULL, HAS_ENCOUNTER = "top", HAS_IMAGE = "top", VIRTUAL = NULL )
@@ -185,26 +185,31 @@ update_edge <- function( from_uuids, to_uuids, label, basis, reviewed ) {
   query %>% call_neo4j( con )
   
   #propagate NOT_SAME through NOT_SAME-IS_SAME (unreviewed)
-  query <- paste0( "MATCH (from:Image)<-[:NOT_SAME]-(int:Image)-[:IS_SAME*2..2]->(to:Image) ",
+  query <- paste0( "MATCH (from:Image)<-[:NOT_SAME]->(int:Image)<-[:IS_SAME*2..2]->(to:Image) ",
                    "WHERE id(from) <> id(to) ",
-                   "AND NOT (from)<-[:NOT_SAME|IS_SAME]->(to) ",
-                   "AND from.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
-                   "AND int.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND id(from) <> id(int) ",
+                   "AND id(to) <> id(int) ",
+                   "AND NOT (from)<-[:NOT_SAME]->(to) ",
+                   "AND NOT (from)<-[:IS_SAME]->(to) ",
+                   "AND from.uuid IN ['", paste0( from_uuids, "', '", to_uuids, collapse = "', '" ), "'] ",
+                   "AND int.uuid IN ['", paste0( from_uuids, "', '", to_uuids, collapse = "', '" ), "'] ",
                    "AND to.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
                    "AND COALESCE(from.unusable, false) <> true ",
                    "AND COALESCE(int.unusable, false) <> true ",
                    "AND COALESCE(to.unusable, false) <> true ",
-                   "MERGE (from)<-[r:NOT_SAME {basis: 'propagated'}]->(to) ")
+                   "MERGE (from)<-[:NOT_SAME {basis: 'propagated'}]->(to) ")
   cat( "QUERY: ", query, "\n" )
   query %>% call_neo4j( con )
   
   #propagate NOT_SAME (reviewed) through NOT_SAME-IS_SAME (reviewed)
-  query <- paste0( "MATCH (from:Image)<-[:NOT_SAME {reviewed: true}]-(int:Image)-[:IS_SAME*2..2 {reviewed: true}]->(to:Image) ",
+  query <- paste0( "MATCH (from:Image)<-[:NOT_SAME {reviewed: true}]->(int:Image)<-[:IS_SAME*2..2 {reviewed: true}]->(to:Image) ",
                    "WHERE id(from) <> id(to) ",
+                   "AND id(from) <> id(int) ",
+                   "AND id(to) <> id(int) ",
                    "AND NOT (from)<-[:NOT_SAME {reviewed: true}]->(to) ",
                    "AND NOT (from)<-[:IS_SAME]->(to) ",
-                   "AND from.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
-                   "AND int.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
+                   "AND from.uuid IN ['", paste0( from_uuids, "', '", to_uuids, collapse = "', '" ), "'] ",
+                   "AND int.uuid IN ['", paste0( from_uuids, "', '", to_uuids, collapse = "', '" ), "'] ",
                    "AND to.uuid IN ['", paste0( nodes$uuid, collapse = "', '" ), "'] ",
                    "AND COALESCE(from.unusable, false) <> true ",
                    "AND COALESCE(int.unusable, false) <> true ",
@@ -230,7 +235,10 @@ draw_img <- function( uuid ) {
 query_n_unreviewed_action <- observeEvent( input$query_n_unreviewed, {
   n <- 10
   react$draw <- NULL
-  payload$graph = NULL
+  payload$graph <- NULL
+  payload$from <- NULL
+  payload$to <- NULL
+  payload$edge_id <- NULL
   payload$query <- paste0( "MATCH (img1:Image)-[rel]-(img2:Image) ",
                           "WHERE rel.reviewed <> true OR rel.reviewed IS NULL ",
                           "WITH COLLECT(img1) + COLLECT(img2) AS imgs ",
@@ -249,7 +257,10 @@ query_n_unreviewed_action <- observeEvent( input$query_n_unreviewed, {
 # triggers "run" with increment
 query_by_folder_path_action <- observeEvent( input$run_folder_query, {
   react$draw <- NULL
-  payload$graph = NULL
+  payload$graph <- NULL
+  payload$from <- NULL
+  payload$to <- NULL
+  payload$edge_id <- NULL
   payload$query <- paste0( "MATCH (img1:Image)<-[:HAS_IMAGE]-(:Folder {path: '", input$query_by_folder_path, "'}) ",
                          "WITH img1 ",
                          "OPTIONAL MATCH (img1)<-[rel:IS_SAME]->(img2:Image) WHERE rel.basis IN ['duplicate', 'cropped'] ",
@@ -270,7 +281,10 @@ query_by_folder_path_action <- observeEvent( input$run_folder_query, {
 # triggers "run" with increment
 manual_query_action <- observeEvent( input$run_manual_query, {
   react$draw <- NULL
-  payload$graph = NULL
+  payload$graph <- NULL
+  payload$from <- NULL
+  payload$to <- NULL
+  payload$edge_id <- NULL
   payload$query <- input$manual_query
   react$run <- ifelse( is.null( react$run ), 0, react$run + 1 )
 })
@@ -347,13 +361,13 @@ run_query <- observeEvent( react$run, {
         #if no real relationships, just add them all
         if( is.null( graph$relationships ) ) {
           graph$relationships <- virtual_rels
-          } else { #otherwise we need to join only those that don't exist
-            graph$relationships <- bind_rows( graph$relationships,
-                                              anti_join( virtual_rels, bind_rows( graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ),
-                                                                                  graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ) %>%
-                                                                                    rename( "from" = "to", "to" = "from" ) ),
-                                                         by = c( "from", "to" ) ) )
-            }
+        } else { #otherwise we need to join only those that don't exist
+          graph$relationships <- bind_rows( graph$relationships,
+                                            anti_join( virtual_rels, bind_rows( graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ),
+                                                                                graph$relationships %>% filter( label %in% c( "IS_SAME", "UNSURE", "NOT_SAME" ) ) %>%
+                                                                                  rename( "from" = "to", "to" = "from" ) ),
+                                                       by = c( "from", "to" ) ) )
+        }
         #rewrite edge ids
         graph$relationships <- graph$relationships %>%
           rowwise() %>%
