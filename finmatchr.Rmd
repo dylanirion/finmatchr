@@ -116,6 +116,7 @@ s3_to_tmp <- function( path, uuid ) {
     } else { #otherwise convert to jpg with Image Magick
       cat( "Converting...\n" )
       system2( "convert", args = paste( "'", src, "' '", dest, "'", sep = "" ) )
+      unlink(src)
     }
   }
 }
@@ -313,7 +314,7 @@ run_query <- observeEvent( react$run, {
     if( length(graph) ) { #@todo: renderText() somehow if there are no results?
       # add potentially empty property columns
       node_cols <- tibble( unusable = NA, reviewed = NA, date = NA_character_, camera_date = NA_character_ )
-      edge_cols <- tibble( basis = NA_character_, reviewed = NA_real_ )
+      edge_cols <- tibble( id = NA_character_ , from = NA_character_, to = NA_character_, basis = NA_character_, reviewed = NA_real_, label = NA_character_ )
       # unnest nodes
       graph$nodes <- graph$nodes %>% 
         unnest_nodes( what = "properties" ) %>%
@@ -328,25 +329,35 @@ run_query <- observeEvent( react$run, {
           unnest_relationships() %>%
           rename( from = startNode, to = endNode, label = type ) %>%
           add_column( !!!edge_cols[!names( edge_cols ) %in% names(.)] )
+        
+        #pseudonodes from relationships (nested tibble)
+        igraph_object<- graph_from_data_frame( d = graph$relationships %>% filter( label == "IS_SAME" & basis %in% c( "duplicate", "cropped" ) & reviewed == T ) %>% select( from, to, everything() ), directed = F, vertices = graph$nodes )
+      
+        comp <- groups( components( igraph_object ) ) %>% map_df( ~ tibble( id = as.character(md5(paste0( sort( . ), collapse = ", ") ) ), members = list(.) ) )
+      
+        graph$nodes <- graph$nodes %>%
+          mutate( group = comp[components( igraph_object )$membership, "id"] %>% .$id ) %>%
+          nest( data = !group ) %>%
+          select( id = group, data ) %>%
+          mutate( label = map_chr( data, ~unique( .$label ) ) )
+      
+        #drop the relationships we grouped
+        graph$relationships <- graph$relationships %>%
+          rowwise() %>%
+          mutate( keep = map2_lgl( from, to, ~ !any( sapply( comp$members, function(e) is.element( .x, e ) & is.element( .y, e ) ) ) ),
+                  from = comp[which( sapply( comp$members, function(e) is.element( from, e ) ) ), "id"] %>% .$id,
+                  to = comp[which( sapply( comp$members, function(e) is.element( to, e ) ) ), "id"] %>% .$id ) %>%
+          ungroup() %>%
+          filter( keep ) %>% select( -keep )
+      } else {
+        graph$nodes <- graph$nodes %>%
+          mutate( group = uuid ) %>%
+          nest( data = !group ) %>%
+          select( id = group, data ) %>%
+          mutate( label = map_chr( data, ~unique( .$label ) ) )
+        graph$relationships <- tibble() %>%
+          add_column( !!!edge_cols[!names( edge_cols ) %in% names(.)] )
       }
-      #pseudonodes from relationships (nested tibble)
-      igraph_object<- graph_from_data_frame( d = graph$relationships %>% filter( label == "IS_SAME" & basis %in% c( "duplicate", "cropped" ) & reviewed == T ) %>% select( from, to, everything() ), directed = F, vertices = graph$nodes )
-      
-      comp <- groups( components( igraph_object ) ) %>% map_df( ~ tibble( id = as.character(md5(paste0( sort( . ), collapse = ", ") ) ), members = list(.) ) )
-      graph$nodes <- graph$nodes %>%
-        mutate( group = comp[components( igraph_object )$membership, "id"] %>% .$id ) %>%
-        nest( data = !group ) %>%
-        select( id = group, data ) %>%
-        mutate( label = map_chr( data, ~unique( .$label ) ) )
-      
-      #drop the relationships we grouped
-      graph$relationships <- graph$relationships %>%
-        rowwise() %>%
-        mutate( keep = map2_lgl( from, to, ~ !any( sapply( comp$members, function(e) is.element( .x, e ) & is.element( .y, e ) ) ) ),
-                from = comp[which( sapply( comp$members, function(e) is.element( from, e ) ) ), "id"] %>% .$id,
-                to = comp[which( sapply( comp$members, function(e) is.element( to, e ) ) ), "id"] %>% .$id ) %>%
-        ungroup() %>%
-        filter( keep ) %>% select( -keep )
       
       #remove 'unusable' nodes (but re-add later)
       unusable <- graph$nodes %>% mutate( unusable = map_lgl( data, ~all( .$unusable == T ) ) ) %>% filter( unusable == T ) %>% select( -unusable ) 
@@ -380,7 +391,9 @@ run_query <- observeEvent( react$run, {
       graph$nodes <- bind_rows( graph$nodes, unusable )
       
       #sort edges
-      graph$relationships <- graph$relationships %>% rowwise %>% mutate( sort = paste0( sort( c( from, to ) ), collapse = ", ") ) %>% ungroup() %>% arrange(sort) %>% select( -sort )
+      if( nrow( graph$relationships ) > 0 ) {
+        graph$relationships <- graph$relationships %>% rowwise %>% mutate( sort = paste0( sort( c( from, to ) ), collapse = ", ") ) %>% ungroup() %>% arrange(sort) %>% select( -sort )
+      }
       
       payload$graph <- graph
       
@@ -402,7 +415,8 @@ style_results <- observeEvent( react$style, {
             chosen = recode( label, !!!chosen.map ),
             #title = case_when( label == 'Event' ~ paste0( '<p><b>', uuid, '</b><br>', date, '</p>' ), label == 'Encounter' ~ paste0( '<p><b>', uuid, '</b><br>', date, '</p>' ), label == 'Image' ~ paste0( '<p><b>', uuid, '</b><br>', source_file, '<br>', camera_date, '<br>', date, '</p>' ) )
             )
-  graph$relationships <- graph$relationships %>%
+  if( nrow(graph$relationships) > 0 ) {
+    graph$relationships <- graph$relationships %>%
     #filter( label != "NOT_SAME" ) %>%
     mutate( color.color = recode( label, !!!color.map ),
             dashes = recode( label, !!!dashes.map ),
@@ -411,6 +425,7 @@ style_results <- observeEvent( react$style, {
             physics = recode( label, !!!physics.map ),
             chosen = recode( label, !!!chosen.map ),
             smooth.enabled = recode( label, !!!smooth.map ) )
+  }
   payload$graph <- graph
   #if we haven't drawn the graph yet, do so, otherwise update it
   if( is.null( react$draw ) ) {
@@ -461,24 +476,29 @@ draw_results <- eventReactive( react$draw, {
 update_results <- observeEvent( react$update, {
   graph <- payload$graph
   #if a node was grouped, and thus our edge changed, try to find a new one
-  #@todo: could probably look for another duplicate or cropped here
-  if( length( which( graph$relationships$id == input$edge_id ) ) ) {
-    i <- which( graph$relationships$id == input$edge_id )
-  } else if( is.null(payload$old_from) | is.null(payload$old_to) ) {
-    new <- graph$nodes %>%
-      mutate( keep = map_lgl( data, ~ ifelse( is.null(payload$old_from), payload$old_to, payload$old_from ) %in% .$id )  ) %>%
-      filter( keep ) %>% select( id ) %>% .$id
-    i <- which( graph$relationships$id == graph$relationships %>%
-                  filter( ( from == new | to == new ) ) %>% slice(1) %>% .$id ) 
+  if( nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ) == 1 | nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ) == 0 ) {
+    i <- 1
   } else {
-    a <- graph$nodes %>%
-      mutate( keep = map_lgl( data, ~ payload$old_from %in% .$id )  ) %>%
-      filter( keep ) %>% select( id ) %>% .$id
-    b <- graph$nodes %>%
+    if( length( which( graph$relationships$id == input$edge_id ) ) ) {
+      i <- which( graph$relationships$id == input$edge_id )
+    } else if( is.null(payload$old_from) | is.null(payload$old_to) ) {
+      new <- graph$nodes %>%
+        mutate( keep = map_lgl( data, ~ ifelse( is.null(payload$old_from), payload$old_to, payload$old_from ) %in% .$id )  ) %>%
+        filter( keep ) %>% select( id ) %>% .$id
+      i <- which( graph$relationships$id == graph$relationships %>%
+                    filter( ( from == new | to == new ) ) %>% slice(1) %>% .$id ) 
+    } else if( !is.null(payload$old_from) & !is.null(payload$old_to) ) {
+      a <- graph$nodes %>%
+        mutate( keep = map_lgl( data, ~ payload$old_from %in% .$id )  ) %>%
+        filter( keep ) %>% select( id ) %>% .$id
+      b <- graph$nodes %>%
         mutate( keep = map_lgl( data, ~ payload$old_to %in% .$id )  ) %>%
-      filter( keep ) %>% select( id ) %>% .$id  
-    i <- which( graph$relationships$id == graph$relationships %>%
-                  filter( ( from == a | to == a ) & ( from == b | to == b ) ) %>% slice(1) %>% .$id ) 
+        filter( keep ) %>% select( id ) %>% .$id
+      i <- which( graph$relationships$id == graph$relationships %>%
+                    filter( ( from == a | to == a ) & ( from == b | to == b ) ) %>% slice(1) %>% .$id )
+    } else {
+      i <- 1
+    }
   }
   visNetworkProxy( "graph" ) %>%
     visUpdateNodes(graph$nodes) %>%
@@ -709,12 +729,13 @@ keydown <- observeEvent( input$keys, {
 # populates and triggers folder_list
 db_stats <- observeEvent( input$refresh, {
   withProgress( message = "Calculating Statistics...", value = 0, {
-    img_count_query <- paste0( "MATCH (img:Image) ",
-                               "WHERE COALESCE(img.unusable, false) <> true ",
-                               "WITH COUNT(img) AS c ",
-                               "RETURN c" )
-    cat( "QUERY: ", img_count_query, "\n" )
+    "CALL gds.graph.create.cypher('valid-images', 'MATCH (n:Image) WHERE COALESCE(n.unusable, false) <> true AND COALESCE(n.reviewed, false) = true RETURN id(n) AS id', 'MATCH (n:Image) WHERE COALESCE(n.unusable, false) <> true AND COALESCE(n.reviewed, false) = true WITH n MATCH (n:Image)-[r:IS_SAME]-(m:Image) WHERE (r.basis = \\'duplicate\\' OR r.basis = \\'cropped\\') AND COALESCE(r.reviewed, false) = true RETURN id(n) AS source, id(m) AS target',{validateRelationships: false})" %>% call_neo4j( con, type = "row" )
+    img_count_query <- paste0( "CALL gds.wcc.stream('valid-images') ",
+                               "YIELD nodeId, componentId ",
+                               "WITH componentId, count(*) AS size ",
+                               " RETURN count(componentId) AS c")
     react$valid_img_count <- img_count_query %>% call_neo4j( con, type = "row" ) %>% .$c %>% .$value
+    "CALL gds.graph.drop('valid-images') YIELD graphName" %>% call_neo4j( con, type = "row" )
     setProgress( value = 1/3 )
     
     unreviewed_img_count_query <- paste0( "MATCH (img:Image) ",
@@ -734,7 +755,8 @@ db_stats <- observeEvent( input$refresh, {
                                              "WITH f, COUNT(i) AS usable, COLLECT(id(i)) AS ids ",
                                              "WHERE SIZE([ (i)<-[:HAS_IMAGE]-(f) WHERE COALESCE(i.reviewed, false) = true | i ] ) <> usable ",
                                              "OR SIZE( [ (a)-[r]->(b) WHERE id(a) IN ids AND id(b) IN ids AND COALESCE(r.reviewed, false) = true | r ] ) < ( usable * ( usable - 1 ) ) / 2 ",
-                                             "RETURN f.path")
+                                             "RETURN f.path ",
+                                             "ORDER BY usable")
     cat( "QUERY: ", unreviewed_folder_count_query, "\n" )
     unreviewed_folders <-  unreviewed_folder_count_query %>% call_neo4j( con, type = "row" )
     react$unreviewed_folder_count <- unreviewed_folders$f.path %>% nrow()
