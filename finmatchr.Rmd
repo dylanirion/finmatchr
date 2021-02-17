@@ -857,7 +857,7 @@ db_stats <- observeEvent( input$refresh, {
       date_list[[i]]$data <- list( query = paste0("img1.date.year = ", unique(dates$year)[i] ) )
       date_list[[i]]$children <- list()
       tmp1 <- dates %>% filter( year == unique(dates$year)[i] )
-      for( j in 1:length(unique(tmp$month)) ) {
+      for( j in 1:length(unique(tmp1$month)) ) {
         date_list[[i]]$children[[j]] <- list()
         date_list[[i]]$children[[j]]$text <- as.character(unique(tmp1$month)[j])
         date_list[[i]]$children[[j]]$data <- list( query = paste0( "img1.date.year = ", unique(dates$year)[i], " AND img1.date.month = ", unique(dates$n_month)[i] ) )
