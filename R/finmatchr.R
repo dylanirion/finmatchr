@@ -1,4 +1,5 @@
 #' @import shiny
+#' @import jsTreeR
 #' @import flexdashboard
 #' @import rmarkdown
 #' @import magick
@@ -14,6 +15,7 @@
 #' @importFrom tools file_ext
 #' @importFrom igraph graph_from_data_frame groups components
 #' @importFrom openssl md5
+#' @importFrom lubridate year month day
 #' @export
 finmatchr <- function( params = list( neo4j_url = "http://localhost:7474",
                                       neo4j_user = "neo4j",
