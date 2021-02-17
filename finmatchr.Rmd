@@ -349,9 +349,9 @@ run_query <- observeEvent( react$run, {
     graph <- payload$query %>% call_neo4j( con, type = "graph" )
   
     #@todo: move all this into a function
-    if( length(graph) ) { #@todo: renderText() somehow if there are no results?
+    if( length(graph) ) {
       # add potentially empty property columns
-      node_cols <- tibble( unusable = NA, reviewed = NA, date = NA_character_, camera_date = NA_character_ )
+      node_cols <- tibble( unusable = NA, reviewed = NA, date = NA_character_, camera_date = NA_character_, region = NA_character_ )
       edge_cols <- tibble( id = NA_character_ , from = NA_character_, to = NA_character_, basis = NA_character_, reviewed = NA_real_, label = NA_character_ )
       # unnest nodes
       graph$nodes <- graph$nodes %>% 
@@ -432,12 +432,11 @@ run_query <- observeEvent( react$run, {
       if( nrow( graph$relationships ) > 0 ) {
         graph$relationships <- graph$relationships %>% rowwise %>% mutate( sort = paste0( sort( c( from, to ) ), collapse = ", ") ) %>% ungroup() %>% arrange(sort) %>% select( -sort )
       }
+    }  
+    payload$graph <- graph
       
-      payload$graph <- graph
-      
-      #trigger styling
-      react$style <- ifelse( is.null( react$style ), 0, react$style + 1 )
-    }
+    #trigger styling
+    react$style <- ifelse( is.null( react$style ), 0, react$style + 1 )
   })
 })
 
@@ -446,23 +445,25 @@ run_query <- observeEvent( react$run, {
 # triggers "draw" on first drawing, or "update" with increment
 style_results <- observeEvent( react$style, {
   graph <- payload$graph
-  graph$nodes <- graph$nodes %>%
+  if( length(graph) ) {
+    graph$nodes <- graph$nodes %>%
     mutate( shape = "circle",
             color.background = recode( label, !!!color.map ),
             font.color = recode( label, !!!font.color.map ),
             chosen = recode( label, !!!chosen.map ),
             #title = case_when( label == 'Event' ~ paste0( '<p><b>', uuid, '</b><br>', date, '</p>' ), label == 'Encounter' ~ paste0( '<p><b>', uuid, '</b><br>', date, '</p>' ), label == 'Image' ~ paste0( '<p><b>', uuid, '</b><br>', source_file, '<br>', camera_date, '<br>', date, '</p>' ) )
             )
-  if( nrow(graph$relationships) > 0 ) {
-    graph$relationships <- graph$relationships %>%
-    #filter( label != "NOT_SAME" ) %>%
-    mutate( color.color = recode( label, !!!color.map ),
-            dashes = recode( label, !!!dashes.map ),
-            font.size = recode( label, !!!font.size.map ),
-            font.align = recode( label, !!!font.align.map ),
-            physics = recode( label, !!!physics.map ),
-            chosen = recode( label, !!!chosen.map ),
-            smooth.enabled = recode( label, !!!smooth.map ) )
+    if( nrow(graph$relationships) > 0 ) {
+      graph$relationships <- graph$relationships %>%
+      #filter( label != "NOT_SAME" ) %>%
+      mutate( color.color = recode( label, !!!color.map ),
+              dashes = recode( label, !!!dashes.map ),
+              font.size = recode( label, !!!font.size.map ),
+              font.align = recode( label, !!!font.align.map ),
+              physics = recode( label, !!!physics.map ),
+              chosen = recode( label, !!!chosen.map ),
+              smooth.enabled = recode( label, !!!smooth.map ) )
+    }
   }
   payload$graph <- graph
   #if we haven't drawn the graph yet, do so, otherwise update it
@@ -480,32 +481,34 @@ style_results <- observeEvent( react$style, {
 # returns visNetwork
 draw_results <- eventReactive( react$draw, {
   graph <- payload$graph
-  react$copy <- ifelse( is.null( react$copy ), 0, react$copy + 1 )
-  visNetwork( graph$nodes, graph$relationships, height = '100%',
-              submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) ) %>%
-  visEvents( type = "on",
-             click = paste0( "function(p) { ",
-                             "  keysEnabled = true;",
-                             "  graphSelected = true;",
-                             "  if( typeof p.edges[0] === 'undefined' && typeof p.nodes[0] !== 'undefined' ) { ",
-                             "    selectEdge(this.body.data.nodes.get(p.nodes[0]).id, ",
-                             "      null, ",
-                             "      null, ",
-                             "      'EDIT SINGLE' ",
-                             "    );",                             
-                             "  } else if( typeof p.nodes[0] === 'undefined' && typeof p.edges[0] !== 'undefined' ) { ",
-                             "    selectEdge(this.body.data.edges.get(p.edges[0]).from, ",
-                             "      this.body.data.edges.get(p.edges[0]).to, ",
-                             "      this.body.data.edges.get(p.edges[0]).label, ",
-                             "      this.body.data.edges.get(p.edges[0]).id ",
-                             "    );",                             
-                             "  }",
-                             "}" ),
-             selectEdge = paste0( "function() { keysEnabled = true; graphSelected = true; }" ),
-             deselectEdge = paste0( "function() { keysEnabled = false; graphSelected = false; }" ) ) %>%
+  if( length(graph) ) {
+    react$copy <- ifelse( is.null( react$copy ), 0, react$copy + 1 )
+    visNetwork( graph$nodes, graph$relationships, height = '100%',
+                submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) ) %>%
+    visEvents( type = "on",
+               click = paste0( "function(p) { ",
+                               "  keysEnabled = true;",
+                               "  graphSelected = true;",
+                               "  if( typeof p.edges[0] === 'undefined' && typeof p.nodes[0] !== 'undefined' ) { ",
+                               "    selectEdge(this.body.data.nodes.get(p.nodes[0]).id, ",
+                               "      null, ",
+                               "      null, ",
+                               "      'EDIT SINGLE' ",
+                               "    );",                             
+                               "  } else if( typeof p.nodes[0] === 'undefined' && typeof p.edges[0] !== 'undefined' ) { ",
+                               "    selectEdge(this.body.data.edges.get(p.edges[0]).from, ",
+                               "      this.body.data.edges.get(p.edges[0]).to, ",
+                               "      this.body.data.edges.get(p.edges[0]).label, ",
+                               "      this.body.data.edges.get(p.edges[0]).id ",
+                               "    );",                             
+                               "  }",
+                               "}" ),
+               selectEdge = paste0( "function() { keysEnabled = true; graphSelected = true; }" ),
+               deselectEdge = paste0( "function() { keysEnabled = false; graphSelected = false; }" ) ) %>%
     visInteraction( dragNodes = F,
                     navigationButtons = T,
                     selectConnectedEdges = F )
+  }
 }, ignoreInit = T )
 
 #"update" reactive
@@ -513,81 +516,88 @@ draw_results <- eventReactive( react$draw, {
 # updates VisNetworkProxy
 update_results <- observeEvent( react$update, {
   graph <- payload$graph
-  n <- NULL
-  e <- NULL
-  #update the graph
-  visNetworkProxy( "graph" ) %>%
-    visUpdateNodes(graph$nodes) %>%
-    visUpdateEdges( graph$relationships ) %>%
-    visRemoveEdges( payload$original_graph$relationships$id[which( !payload$original_graph$relationships$id %in% graph$relationships$id )] ) %>%
-    visRemoveNodes( payload$original_graph$nodes$id[which( !payload$original_graph$nodes$id %in% graph$nodes$id )] ) %>%
-    visSetTitle( submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) )
+  if( length(graph) ) {
+    n <- NULL
+    e <- NULL
+    #update the graph
+    visNetworkProxy( "graph" ) %>%
+      visUpdateNodes(graph$nodes) %>%
+      visUpdateEdges( graph$relationships ) %>%
+      visRemoveEdges( payload$original_graph$relationships$id[which( !payload$original_graph$relationships$id %in% graph$relationships$id )] ) %>%
+      visRemoveNodes( payload$original_graph$nodes$id[which( !payload$original_graph$nodes$id %in% graph$nodes$id )] ) %>%
+      visSetTitle( submain = paste0( nrow( graph$relationships %>% filter( reviewed == T ) ), "/", nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ), " Edges Reviewed" ) )
   
-  #then decide if we are selecting a node or edge
-  if( is.null(payload$old_to) ) {
-    #selecting just a node, find the old one (if it exists)
-    n <- graph$nodes %>%
-      mutate( keep = map_lgl( data, ~ payload$old_from %in% .$id )  ) %>%
-      filter( keep ) %>% select( id ) %>% .$id
-    if( length(n) ) {
-      n <- which( graph$nodes$id == n )
-    } else {
-      n <- NULL
-      e <- 1
-    }
-  } else if( !is.null(payload$old_from) & !is.null(payload$old_to) ) {
-    #selecting an edge, if there is only 1, select it
-    if( nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ) == 1 | nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ) == 0 ) {
-      e <- 1
-    } else {
-      # otherwise try to find the original
-      if( length( which( graph$relationships$id == input$edge_id ) ) ) {
-        e <- which( graph$relationships$id == input$edge_id )
-      } else if( !is.null(payload$old_from) & !is.null(payload$old_to) ) {
-        # or try to find the new edge
-        a <- graph$nodes %>%
-          mutate( keep = map_lgl( data, ~ payload$old_from %in% .$id )  ) %>%
-          filter( keep ) %>% select( id ) %>% .$id
-        b <- graph$nodes %>%
-          mutate( keep = map_lgl( data, ~ payload$old_to %in% .$id )  ) %>%
-          filter( keep ) %>% select( id ) %>% .$id
-        if( length(a) & length(b) ) {
-          # found the new edge
-          if( a == b ) {
-            n <- which( graph$nodes$id == a )
-          } else {
-            e <- which( graph$relationships$id == graph$relationships %>%
-                        filter( ( from == a | to == a ) & ( from == b | to == b ) ) %>% slice(1) %>% .$id )
-          }
-        } else if( !length(a) & !length(b) ) {
-          #if somehow we can't find anything, just select the first edge
-          e <- 1
-        } else {
-          #otherwise just select the remaining original node
-          n <- ifelse( length(a), which( graph$nodes$id == a ), which( graph$nodes$id == b ) )
-        }
+    #then decide if we are selecting a node or edge
+    if( is.null(payload$old_to) ) {
+      #selecting just a node, find the old one (if it exists)
+      n <- graph$nodes %>%
+        mutate( keep = map_lgl( data, ~ payload$old_from %in% .$id )  ) %>%
+        filter( keep ) %>% select( id ) %>% .$id
+      if( length(n) ) {
+        n <- which( graph$nodes$id == n )
       } else {
+        n <- NULL
         e <- 1
       }
+    } else if( !is.null(payload$old_from) & !is.null(payload$old_to) ) {
+      #selecting an edge, if there is only 1, select it
+      if( nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ) == 1 | nrow( graph$relationships %>% filter( label %in% c( 'IS_SAME', 'UNSURE', 'NOT_SAME', 'VIRTUAL' ) ) ) == 0 ) {
+        e <- 1
+      } else {
+        # otherwise try to find the original
+        if( length( which( graph$relationships$id == input$edge_id ) ) ) {
+          e <- which( graph$relationships$id == input$edge_id )
+        } else if( !is.null(payload$old_from) & !is.null(payload$old_to) ) {
+          # or try to find the new edge
+          a <- graph$nodes %>%
+            mutate( keep = map_lgl( data, ~ payload$old_from %in% .$id )  ) %>%
+            filter( keep ) %>% select( id ) %>% .$id
+          b <- graph$nodes %>%
+            mutate( keep = map_lgl( data, ~ payload$old_to %in% .$id )  ) %>%
+            filter( keep ) %>% select( id ) %>% .$id
+          if( length(a) & length(b) ) {
+            # found the new edge
+            if( a == b ) {
+              n <- which( graph$nodes$id == a )
+            } else {
+              e <- which( graph$relationships$id == graph$relationships %>%
+                          filter( ( from == a | to == a ) & ( from == b | to == b ) ) %>% slice(1) %>% .$id )
+            }
+          } else if( !length(a) & !length(b) ) {
+            #if somehow we can't find anything, just select the first edge
+            e <- 1
+          } else {
+            #otherwise just select the remaining original node
+            n <- ifelse( length(a), which( graph$nodes$id == a ), which( graph$nodes$id == b ) )
+          }
+        } else {
+          e <- 1
+        }
+      }
     }
-  }
-  if( !is.null(n) ) {
+    if( !is.null(n) ) {
+      visNetworkProxy( "graph" ) %>%
+        visSetSelection( nodesId = graph$nodes$id[n], highlightEdges = F )
+      session$sendCustomMessage( "simSelect", list( from = graph$nodes$id[n],
+                                                    to = NULL,
+                                                    label = NULL,
+                                                    id = "EDIT SINGLE" ) )
+    } else if( !is.null(e) ) {
+      visNetworkProxy( "graph" ) %>%
+        visSetSelection( edgesId = graph$relationships$id[e] )
+      session$sendCustomMessage( "simSelect", list( from = graph$relationships$from[e],
+                                                    to = graph$relationships$to[e],
+                                                    label = graph$relationships$label[e],
+                                                    id = graph$relationships$id[e] ) )
+    }
+    session$sendCustomMessage( "setFromImgIDX", ifelse( is.null(payload$old_from), 1, input$from_img_idx ) )
+    session$sendCustomMessage( "setToImgIDX", ifelse( is.null(payload$old_to), 1, input$to_img_idx ) )
+  } else {
     visNetworkProxy( "graph" ) %>%
-      visSetSelection( nodesId = graph$nodes$id[n], highlightEdges = F )
-    session$sendCustomMessage( "simSelect", list( from = graph$nodes$id[n],
-                                                  to = NULL,
-                                                  label = NULL,
-                                                  id = "EDIT SINGLE" ) )
-  } else if( !is.null(e) ) {
-    visNetworkProxy( "graph" ) %>%
-      visSetSelection( edgesId = graph$relationships$id[e] )
-    session$sendCustomMessage( "simSelect", list( from = graph$relationships$from[e],
-                                                  to = graph$relationships$to[e],
-                                                  label = graph$relationships$label[e],
-                                                  id = graph$relationships$id[e] ) )
+      visRemoveEdges( payload$original_graph$relationships$id ) %>%
+      visRemoveNodes( payload$original_graph$nodes$id ) %>%
+      visSetTitle( submain = "No remaining nodes" )
   }
-  session$sendCustomMessage( "setFromImgIDX", ifelse( is.null(payload$old_from), 1, input$from_img_idx ) )
-  session$sendCustomMessage( "setToImgIDX", ifelse( is.null(payload$old_to), 1, input$to_img_idx ) )
 })
 
 #"copy" reactive
@@ -815,7 +825,7 @@ db_stats <- observeEvent( input$refresh, {
                                " RETURN count(componentId) AS c")
     react$valid_img_count <- img_count_query %>% call_neo4j( con, type = "row" ) %>% .$c %>% .$value
     "CALL gds.graph.drop('valid-images') YIELD graphName" %>% call_neo4j( con, type = "row" )
-    setProgress( value = 1/3 )
+    setProgress( value = 1/4 )
     
     unreviewed_img_count_query <- paste0( "MATCH (img:Image) ",
                                           "WHERE COALESCE(img.unusable, false) <> true AND COALESCE(img.reviewed, false) <> true ",
@@ -824,7 +834,7 @@ db_stats <- observeEvent( input$refresh, {
     cat( "QUERY: ", unreviewed_img_count_query, "\n" )
     react$unreviewed_img_count <- unreviewed_img_count_query %>% call_neo4j( con, type = "row" ) %>% .$c %>% .$value
 
-    setProgress( value = 2/3 )
+    setProgress( value = 2/4 )
     
     unreviewed_folder_count_query <- paste0( "MATCH (i:Image)<-[:HAS_IMAGE]-(f:Folder)<-[:HAS_FOLDER*]-(p:Folder) ",
                                              "WHERE COALESCE(i.unusable, false) <> true ",
@@ -841,6 +851,8 @@ db_stats <- observeEvent( input$refresh, {
     react$unreviewed_folder_count <- unreviewed_folders$f.path %>% nrow()
     #@todo: how to return nested lists for grouped select?
     react$unreviewed_n_folders <- unreviewed_folders$f.path$value[1:10]
+    
+    setProgress( value = 3/4 )
     
     date_query <- paste0( "MATCH (i:Image) WITH DISTINCT i.date AS dates RETURN dates ORDER BY dates")
     cat( "QUERY: ", date_query, "\n" )
@@ -860,7 +872,7 @@ db_stats <- observeEvent( input$refresh, {
       for( j in 1:length(unique(tmp1$month)) ) {
         date_list[[i]]$children[[j]] <- list()
         date_list[[i]]$children[[j]]$text <- as.character(unique(tmp1$month)[j])
-        date_list[[i]]$children[[j]]$data <- list( query = paste0( "img1.date.year = ", unique(dates$year)[i], " AND img1.date.month = ", unique(dates$n_month)[i] ) )
+        date_list[[i]]$children[[j]]$data <- list( query = paste0( "img1.date.year = ", unique(dates$year)[i], " AND img1.date.month = ", unique(tmp1$n_month)[j] ) )
         date_list[[i]]$children[[j]]$children <- list()
         tmp2 <- tmp1 %>% filter( month == unique(tmp1$month)[j] )
         for( k in 1:nrow(tmp2) ) {
