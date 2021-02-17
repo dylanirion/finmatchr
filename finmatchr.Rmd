@@ -512,8 +512,6 @@ draw_results <- eventReactive( react$draw, {
 # displays "graph" payload
 # updates VisNetworkProxy
 update_results <- observeEvent( react$update, {
-  cat("old_from: ", payload$old_from, "\n")
-  cat("old_to: ", payload$old_to, "\n")
   graph <- payload$graph
   n <- NULL
   e <- NULL
