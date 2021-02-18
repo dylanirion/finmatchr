@@ -121,7 +121,7 @@ addResourcePath( prefix = "img", directoryPath = tempdir() )
 s3_to_tmp <- function( path, uuid ) {
   src <- paste0( tempdir(), "/", basename(path) )
   dest <- paste0( tempdir(), "/", uuid, '.jpg' )
-  if( !file.exists( src ) ) {
+  if( !file.exists( dest ) ) {
     save_object( path, bucket = pars$s3_bucket, file = src, base_url = pars$s3_endpoint, region = pars$s3_region, key = pars$s3_access_key, secret = pars$s3_secret_key, use_https = pars$ssl )
   
     #standardize extension if jpg
