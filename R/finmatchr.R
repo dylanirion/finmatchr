@@ -26,5 +26,5 @@ finmatchr <- function( params = list( neo4j_url = "http://localhost:7474",
                                       s3_region = "",
                                       s3_endpoint = "localhost:9000",
                                       ssl = F ) ) {
-  rmarkdown::run( 'finmatchr.Rmd', render_args = list( params = params ), shiny_args = list(launch.browser = TRUE ) )
+  rmarkdown::run( system.file( 'rmd', 'finmatchr.Rmd', package='finmatchr', mustWork = T ), render_args = list( params = params ), shiny_args = list(launch.browser = TRUE ) )
 }
